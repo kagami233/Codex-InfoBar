@@ -4,6 +4,7 @@ import { randomBytes, createHash } from 'node:crypto';
 import { RolloutReader, validateThreadId } from './reader.mjs';
 import { Cdp, listTargets, verifyEndpointOwner } from './cdp.mjs';
 import { SnapshotCache } from './snapshot-cache.mjs';
+import {addCompactionEstimate} from './compaction-estimate.mjs';
 
 const here = new URL('.', import.meta.url);
 const args = process.argv.slice(2);
@@ -22,8 +23,8 @@ const reader = new RolloutReader();
 const renderer = (await Promise.all(['renderer.js', 'account-source.js'].map(file => fs.readFile(new URL(file, here), 'utf8')))).join('\n;\n');
 const rendererRevision = createHash('sha256').update(renderer).digest('hex');
 const missing = (threadId, error) => ({ threadId, status: 'unavailable', source: 'local-rollout', warning: error.message });
-async function snapshot(threadId) {
-  try { return { ...(await reader.snapshot(threadId)), compactReference: null }; } catch (error) { return missing(threadId,error); }
+async function snapshot(threadId,client,previous) {
+  try { return await addCompactionEstimate(await reader.snapshot(threadId),client,previous); } catch (error) { return missing(threadId,error); }
 }
 
 async function previewAccountSnapshot() {
@@ -126,7 +127,7 @@ async function attach() {
             }
             const id = await client.evaluate('window.__CODEX_METRICS_HUD__.getThreadId()');
             if (id) {
-              const data = await snapshot(id);
+              const data = await snapshot(id,client,sharedSnapshots.get(id)?.snapshot);
               sharedSnapshots.delete(id);
               sharedSnapshots.set(id, { snapshot: data, receivedAt: Date.now() });
               if (sharedSnapshots.size > 64) sharedSnapshots.delete(sharedSnapshots.keys().next().value);

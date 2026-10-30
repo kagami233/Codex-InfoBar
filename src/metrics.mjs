@@ -66,6 +66,8 @@ export function parseRollout(text, {
   compactLimitScope = "total", historyComplete = false,
 } = {}) {
   let model = null;
+  let compactionCwd = null, growthBaseline = null, usageModel = null, usageWindow = null;
+  const recentContextGrowth = [];
   let updatedAt = null;
   let latestUsageAt = -Infinity;
   let latestResetsAt = -Infinity;
@@ -109,6 +111,7 @@ export function parseRollout(text, {
     if (event.type === "session_meta") {
       if (threadId && p.id && p.id !== threadId) return unavailable("会话 ID 不匹配");
       threadId ??= p.id ?? null;
+      if (typeof p.cwd==='string') compactionCwd=p.cwd;
     }
     if (p.thread_id && threadId && p.thread_id !== threadId) continue;
     const type = event.type === "event_msg" ? p.type : event.type;
@@ -121,7 +124,8 @@ export function parseRollout(text, {
       }
     }
     if (type === "turn_context") {
-      if (typeof p.model === "string") model = p.model;
+      if (typeof p.model === 'string' && p.model !== model) { model=p.model; growthBaseline=null; recentContextGrowth.length=0; }
+      if (typeof p.cwd==='string') compactionCwd=p.cwd;
       continue;
     }
     if (type === "task_started") {
@@ -155,8 +159,10 @@ export function parseRollout(text, {
         canonical: type === "compacted", at: stamp, turn: p.turn_id ?? null,
         id: p.compaction_response_id ?? p.compaction_id ?? p.window_id ?? null,
         trigger: trigger(p),
+        tokens: number(p.compaction_tokens_before), model:usageModel ?? model, contextWindow:usageWindow ?? contextWindow,
+
       });
-      compactionAfterUsage = true;
+      compactionAfterUsage = true; growthBaseline=null; recentContextGrowth.length=0;
       continue;
     }
     let lastUsage = null;
@@ -182,7 +188,12 @@ export function parseRollout(text, {
       latestUsageAt = stamp;
       updatedAt = new Date(stamp).toISOString();
     }
-    if (lastUsage) { last = lastUsage; compactionAfterUsage = false; }
+    if (lastUsage) {
+      const used=number(lastUsage.total_tokens);
+      if(used!==null&&growthBaseline!==null&&used>growthBaseline){recentContextGrowth.push(used-growthBaseline);if(recentContextGrowth.length>12)recentContextGrowth.shift();}
+      if(used!==null)growthBaseline=used;
+      last = lastUsage; compactionAfterUsage = false; usageModel=model; usageWindow=contextWindow;
+    }
     const totalOutput = number(totalUsage?.output_tokens);
     if (current) {
       const recordOutput = number(turnUsage?.output_tokens);
@@ -250,6 +261,8 @@ export function parseRollout(text, {
   if (compactLimitScope === "body_after_prefix" && limit !== null) warnings.push("压缩阈值按窗口前缀之后的增长计算，余量未知");
   return {
     threadId, model, updatedAt, lastCacheRatio: cacheRatio,
+    compactionCwd, recentContextGrowth,
+    compactionSamples: unique.filter(x=>x.tokens>0).slice(-8).map(x=>({tokens:x.tokens,model:x.model,contextWindow:x.contextWindow,trigger:x.trigger})),
     usageResets, usageResetsUpdatedAt,
     contextUsedTokens: used, contextWindowTokens: contextWindow,
     contextRemainingTokens: used !== null && contextWindow !== null ? Math.max(0, contextWindow - used) : null,

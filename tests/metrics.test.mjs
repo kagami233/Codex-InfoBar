@@ -183,3 +183,9 @@ test("invalid resets stay unknown and expired timestamps are never rolled forwar
   assert.equal(result.usageResetsUpdatedAt, new Date(start + 1000).toISOString());
   assert.deepEqual(parse([e("session_meta", { id: "wrong" }), good]).usageResets, []);
 });
+
+test('compaction calibration exports token metadata with model/window identity and explicit manual distinction',()=>{
+ const data=parse([e('turn_context',{model:'model',cwd:'/test/project'}),count(u(170000,100000,2000),u(),1),e('compacted',{window_id:'w1',window_number:1,compaction_tokens_before:172000,trigger:'manual'},2)]);
+ assert.equal(data.compactionCwd,'/test/project');
+ assert.deepEqual(data.compactionSamples,[{tokens:172000,model:'model',contextWindow:1000,trigger:'manual'}]);
+});

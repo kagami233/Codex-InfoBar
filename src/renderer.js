@@ -329,9 +329,9 @@
       `包含手动和自动压缩，按完成事件去重。${partialHistory ? "当前可读历史可能不完整，此处仅为已记录次数。" : ""}`);
     metric("context", "上下文余量", numeric(values.contextRemainingTokens) ? `${tokens(values.contextRemainingTokens)} tok` : "—",
       `最近记录的上下文占用 ${tokens(values.contextUsedTokens)} / ${tokens(values.contextWindowTokens)} tok；上下文上限不等于压缩阈值。`);
-    // Model catalog defaults are not the session's resolved trigger budget.
-    // Ignore historical estimates, including snapshots restored from old caches.
-    metric('budget', '剩余压缩余量', '—', '当前会话未上报可验证的自动压缩触发余量。');
+    const reference = values.compactReference;
+    const estimated = reference?.kind === 'calibrated-compaction-estimate' && numeric(reference.remainingPercent);
+    metric('budget', '剩余压缩余量', estimated ? `≈${Math.floor(reference.remainingPercent)}%` : '—', '按配置、近期压缩记录及请求增长余量校准的估计。');
     resetMetric(stale);
   }
 

@@ -15,6 +15,10 @@ function clean(entry, now) {
   const snapshot = { threadId:value.threadId.toLowerCase(), status:'ok', source:'local-rollout',
     historyComplete:value.historyComplete === true, active:false };
   for (const key of NUMBERS) snapshot[key] = Number.isFinite(value[key]) && value[key] >= 0 ? value[key] : null;
+  if(typeof value.model==='string')snapshot.model=value.model.slice(0,100);
+  snapshot.compactionSamples=Array.isArray(value.compactionSamples)?value.compactionSamples.slice(-8).filter(x=>typeof x.model==='string'&&Number.isFinite(x.tokens)&&x.tokens>0&&Number.isFinite(x.contextWindow)&&x.contextWindow>0).map(x=>({model:x.model.slice(0,100),tokens:x.tokens,contextWindow:x.contextWindow,trigger:['auto','manual'].includes(x.trigger)?x.trigger:'unknown'})):[];
+  const r=value.compactReference;
+  if(r?.kind==='calibrated-compaction-estimate'&&['limit','remaining','remainingPercent','reserve','sampleCount'].every(k=>Number.isFinite(r[k])&&r[k]>=0))snapshot.compactReference={kind:r.kind,limit:r.limit,remaining:r.remaining,remainingPercent:r.remainingPercent,reserve:r.reserve,sampleCount:r.sampleCount,source:typeof r.source==='string'?r.source.slice(0,80):'unknown'};
   // Account limits/cards are deliberately reread from the signed-in client.
   return { snapshot, receivedAt:at };
 }

@@ -77,3 +77,12 @@ test('large chat bodies and older fragments do not block selected telemetry', as
   assert.equal(snapshot.compactionCount, 2);
   assert.ok(reader.cache.get(id).text.length < 10000);
 });
+
+test('compaction learning reads only numeric usage metadata, excluding summary and replacement content',async t=>{
+ const {home,dir}=await fixture(t);
+ const text=data(id)+JSON.stringify({type:'compacted',payload:{window_number:1,window_id:'sample',message:'private summary',latest_token_usage_record:{usage:{total_tokens:900,input_tokens:800,output_tokens:100},private:'secret'},replacement_history:['private content']}})+'\n';
+ await write(dir,`rollout-2026-10-30T00-00-00-${id}.jsonl`,text,0);
+ const reader=new RolloutReader({codexHome:home});const s=await reader.snapshot(id);
+ assert.equal(s.compactionSamples[0].tokens,900);
+ assert.doesNotMatch(reader.cache.get(id).text,/private summary|private content|secret/);
+});

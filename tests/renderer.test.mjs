@@ -472,3 +472,11 @@ test('blank remote and auxiliary composers do not qualify as new local chats',()
  env.setNativeThread(null,null);
  assert.equal(env.api.getStatus().mounted,false);
 });
+
+test('calibrated compaction estimate is displayed approximately while historical default estimates remain rejected',()=>{
+ const env=environment();
+ env.api.update(snapshot({compactReference:{kind:'calibrated-compaction-estimate',remainingPercent:18.9,remaining:19000,limit:100000,reserve:5000,sampleCount:1,source:'observed-auto'}}));
+ const budget=env.host.shadowRoot.children[1].children.find(n=>n.attributes['data-metric']==='budget');
+ assert.equal(budget.children[1].textContent,'≈18%');
+ assert.equal(budget.title,'剩余压缩余量：≈18%');
+});

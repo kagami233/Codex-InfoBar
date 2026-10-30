@@ -8,7 +8,7 @@ export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{1
 const MAX_BYTES = 64 * 1024 * 1024;
 const MAX_HEADER_BYTES = 1024 * 1024;
 const TELEMETRY = new Set(['session_meta', 'turn_context', 'compacted', 'context_compacted', 'token_usage_record', 'token_count', 'task_started', 'task_complete', 'task_completed', 'task_aborted', 'turn_aborted', 'account/rateLimits/updated']);
-const FIELDS = ['id','type','thread_id','turn_id','response_id','model','started_at','completed_at','duration_ms','model_context_window','usage','thread_token_usage','turn_token_usage','info','rate_limits','rateLimits','rate_limits_by_limit_id','rateLimitsByLimitId','window_number','window_id','compaction_response_id','compaction_id','automatic','trigger','reason','mode'];
+const FIELDS = ['cwd','compaction_tokens_before','id','type','thread_id','turn_id','response_id','model','started_at','completed_at','duration_ms','model_context_window','usage','thread_token_usage','turn_token_usage','info','rate_limits','rateLimits','rate_limits_by_limit_id','rateLimitsByLimitId','window_number','window_id','compaction_response_id','compaction_id','automatic','trigger','reason','mode'];
 
 async function telemetryText(file, size) {
   const lines = [];
@@ -20,6 +20,10 @@ async function telemetryText(file, size) {
     const type = e.type === 'event_msg' ? e.payload?.type : e.type;
     if (!TELEMETRY.has(type) || !e.payload) return;
     const payload = Object.fromEntries(FIELDS.filter(k => Object.hasOwn(e.payload, k)).map(k => [k, e.payload[k]]));
+    if (e.type === 'compacted') {
+      const tokens=e.payload.latest_token_usage_record?.usage?.total_tokens;
+      if(Number.isFinite(tokens)&&tokens>0)payload.compaction_tokens_before=tokens;
+    }
     const text = JSON.stringify({type:e.type, timestamp:e.timestamp, payload});
     retained += Buffer.byteLength(text);
     if (retained > MAX_BYTES) throw new Error('统计事件本身超过 64 MiB，暂无法完整处理。');
