@@ -1,0 +1,33 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import os from 'node:os';
+import { SnapshotCache } from '../src/snapshot-cache.mjs';
+const id = '11111111-2222-3333-4444-555555555555';
+test('disk cache survives a fresh instance, preserves age and excludes content/account fields', async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(),'hud-cache-'));
+  t.after(()=>fs.rm(dir,{recursive:true,force:true}));
+  const file=path.join(dir,'cache.json'), now=1000000000;
+  const entries=new Map([[id,{receivedAt:now-50000,snapshot:{threadId:id,status:'ok',averageOutputTps:34,compactionCount:2,usageResets:[{balance:'secret'}],prompt:'private',resetCards:['private'],active:true}}]]);
+  await new SnapshotCache({file,now:()=>now}).save(entries);
+  const loaded=await new SnapshotCache({file,now:()=>now+1000}).load();
+  assert.equal(loaded.get(id).snapshot.averageOutputTps,34);
+  assert.equal(loaded.get(id).receivedAt,now-50000);
+  assert.equal(loaded.get(id).snapshot.active,false);
+  assert.doesNotMatch(await fs.readFile(file,'utf8'),/private|secret|usageResets|resetCards|prompt/);
+  if(process.platform!=='win32')assert.equal((await fs.stat(file)).mode & 0o777,0o600);
+  assert.equal((await new SnapshotCache({file,now:()=>now+8*86400000}).load()).size,0);
+  await fs.writeFile(file,'{broken');
+  assert.equal((await new SnapshotCache({file}).load()).size,0);
+});
+test('invalid or future entries are ignored, bounded cache and atomic saves leave no temp files',async t=>{
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'hud-cache-'));t.after(()=>fs.rm(dir,{recursive:true,force:true}));
+  const file=path.join(dir,'cache.json'), now=1000000000;
+  const entries=new Map(Array.from({length:70},(_,i)=>{const key=`${String(i).padStart(8,'0')}-2222-3333-4444-555555555555`;return[key,{receivedAt:now-1,snapshot:{threadId:key,status:'ok'}}]}));
+  const cache=new SnapshotCache({file,now:()=>now});await cache.save(entries);
+  assert.equal((await cache.load()).size,64);
+  await fs.writeFile(file,JSON.stringify({version:1,entries:[{receivedAt:now+1,snapshot:{threadId:id,status:'ok'}},{receivedAt:now,snapshot:{threadId:'../bad',status:'ok'}}]}));
+  assert.equal((await cache.load()).size,0);
+  assert.deepEqual(await fs.readdir(dir),['cache.json']);
+});

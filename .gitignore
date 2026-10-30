@@ -1,0 +1,12 @@
+.DS_Store
+node_modules/
+output/
+*.log
+*.tmp
+status.json
+snapshot-cache.json
+settings.json
+watcher-lock.json
+*.app/
+.env
+.env.*

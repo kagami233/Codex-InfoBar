@@ -1,0 +1,157 @@
+# Codex-InfoBar
+
+在 **Codex Desktop 输入框内部**显示 token 速度、缓存比例、压缩次数、上下文余量、压缩参考余量及账户用量倒计时。支持 macOS 与 Windows 的安装与运行路径，点击原来的 Codex 图标后由后台服务自动挂载。
+
+![Codex-InfoBar 示例状态条](docs/preview.png)
+
+上图使用示例数据。
+
+非官方项目，与 OpenAI 无关联。通过本机 Chrome DevTools Protocol (CDP) 注入独立组件，不修改官方应用包或签名。
+
+## 功能
+
+| 指标 | 含义 |
+| --- | --- |
+| token 输出速度 | 当前/最后一轮真实输出 token ÷ 回合耗时，包含等待与工具执行；不是逐 token 解码速度 |
+| 缓存 | 最近请求 cached_input_tokens / input_tokens |
+| 压缩次数 | 手动与自动压缩均计入；只统计可读取历史中完成的压缩，显示 `1次` |
+| 上下文余量 | 最近上报的上下文容量减已用 token |
+| 剩余压缩参考 | 可匹配模型目录时显示 `≈13%`；按模型默认规则估算，**不是会话最终触发阈值** |
+| 账户用量 | 26px 圆环，圈内数字 10.4px、不带 `%`；亮色为剩余，顶部顺时针消耗 |
+| 重置倒计时 | `5天 03时 21分`；若可用重置卡更早到期，改显示该卡倒计时并加卡片图标 |
+
+窗口保留独立组件，共享采集进程。切换聊天先显示缓存、再后台更新；最多保存最近 64 个聊天的 7 天统计。账户缓存按账户及工作区隔离，重启后先验证本机账户身份，再恢复用量和绝对到期时间；倒计时继续走。卡到期不会自动兑换或重置额度。
+
+## 平台及验证范围
+
+| 平台 | 支持路径 | 验证范围 |
+| --- | --- | --- |
+| macOS | 官方 Codex.app / ChatGPT.app；LaunchAgent 用户服务 | 原型已在 macOS Codex 26.1023.50603 实际挂载；发布版平台适配和诊断在 macOS 验证 |
+| Windows 10/11 | Microsoft Store `OpenAI.Codex` 包；用户 Startup 启动项 | 提供完整适配和 Windows CI；**尚无 Windows Codex 图形客户端实机验收** |
+
+Windows 支持不是“只提供一个安装脚本”：包括 Store 包检测、主进程识别、端口所有权及回环校验、正常关闭再启动、用户后台启动和平台缓存路径。但客户端更新、组织策略、受限 PowerShell 或禁用 Windows Script Host 可能影响运行。CI 测试也不能代替真实 GUI 验证。
+
+## 安装要求
+
+- 安装并打开过官方 Codex Desktop，完成登录。
+- Node.js **22.17 或更新版本**（推荐当前 LTS），以及 Git（使用 clone 时）。
+- 原生终端运行，不要在 WSL 中安装 Windows 客户端集成。
+- **没有第三方 npm 依赖，无需运行 `npm install`。**
+
+Git 不可用时也可用 GitHub 的 Code → Download ZIP，解压后在项目目录运行相同 npm 命令。
+
+## 最快安装：交给 Codex
+
+复制下面一段发给 Codex，完整版本见 [自动安装提示词](docs/AUTO_INSTALL_PROMPT.md)：
+
+```text
+请安装 https://github.com/kagami233/Codex-InfoBar 。先阅读 README，识别 macOS/Windows 并检查 Node.js 22.17+，克隆到独立目录，运行 npm test 和 npm run install:service，再运行 npm run doctor。保护当前正在运行的 Codex，不立即重启；如未开启调试，告诉我保存工作后完全退出，再点击原 Codex 图标等待自动挂载。不要修改官方应用包、凭据或压缩设置，不要强制终止 Windows 客户端。确认 mounted=true 后才报告原生挂载成功；若未成功，给出具体日志、限制及下一步。最后说明安装位置和 npm run uninstall:service 卸载命令。
+```
+
+## macOS 手动安装
+
+在 Terminal 运行：
+
+```sh
+git clone https://github.com/kagami233/Codex-InfoBar.git
+cd Codex-InfoBar
+node --version
+npm test
+npm run install:service
+```
+
+也可双击 `scripts/install-macos.command`（同样需要已安装 Node.js）。
+
+安装时保护当前运行中的 Codex。**首次使用请等工作完成后 Command+Q 完全退出，再点击原 Codex 图标**。后台检测到新的普通启动后，等待约 15 秒，正常结束并带本机调试参数重新打开；再等待挂载，通常共约 15–30 秒。窗口可能关闭再打开一次，等状态条出现后再开始任务。
+
+之后继续使用原来的 Codex 图标；用户级 LaunchAgent 随登录自动运行。如果不希望安装后台服务，可以先完全退出 Codex，然后在项目目录执行 `npm start`，保留终端运行。
+
+## Windows 手动安装
+
+使用 **PowerShell**：
+
+```powershell
+git clone https://github.com/kagami233/Codex-InfoBar.git
+cd Codex-InfoBar
+node --version
+npm test
+npm run install:service
+```
+
+或从项目目录运行 `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-windows.ps1`，该参数只影响这次脚本进程。
+
+安装器定位 `OpenAI.Codex` Store 包，复制独立运行文件到用户目录，并创建当前用户 Startup 的 `Codex-InfoBar.vbs`，无需管理员权限。首次安装保护已打开的 Codex。保存工作后完全退出，再从原图标启动，等待后台自动处理。
+
+Windows 只用 `CloseMainWindow()` 请求关闭，不使用强制终止。若 Codex 退到托盘、保留进程或拒绝退出，自动加载会停止尝试；请手动完全退出，然后在项目目录执行：
+
+```powershell
+npm start
+```
+
+手动模式会在 Codex 未运行时带调试参数打开它，再加载状态条；终端需保持运行。Windows Script Host 被组织策略禁用时也用此方式。非 Store 安装暂未支持。
+
+## 诊断与卸载
+
+```sh
+npm run doctor
+npm run uninstall:service
+```
+
+`doctor` 输出 Node 版本、平台、客户端位置、后台状态及各窗口组件状态。聊天窗口 `mounted:true` 才表示已挂载；`stale:false` 表示快照仍新鲜。设置页、聚焦面板等辅助窗口没有状态条是正常的。
+
+卸载停止本项目服务、删除登录启动项，保留运行文件和缓存。完全退出再正常打开 Codex，可关闭本次调试端口。没有改写官方客户端。确认卸载后可手动删除以下数据目录。
+
+| 内容 | macOS | Windows |
+| --- | --- | --- |
+| 运行文件/日志/聊天缓存 | `~/Library/Application Support/Codex-InfoBar/` | `%LOCALAPPDATA%\Codex-InfoBar\` |
+| 登录服务 | `~/Library/LaunchAgents/local.codex.infobar.watcher.plist` | `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\Codex-InfoBar.vbs` |
+| 账户缓存 | Codex 自身 localStorage，键 `codex-metrics-hud.account-cache.v1` | 同左 |
+
+日志：`watcher.log`、`collector.log`，macOS 服务还有 `service.log` / `service-error.log`。卸载不会删除账户缓存；可由客户端本地存储清理功能清除，账户切换通知也会清除旧账户缓存。
+
+### 从本项目早期原型迁移
+
+若曾安装旧的 `Codex-Metrics-HUD`，先在旧项目执行 `node src/install-watcher.mjs --uninstall`，再安装本项目，避免两套后台服务同时运行。旧聊天缓存可在备份后复制：从 `CodexMetricsHUD/snapshot-cache.json` 复制到新数据目录同名文件，保留原采集时间。不复制日志、运行锁或其他项目的数据。
+
+## 配置
+
+以下环境变量在执行安装命令之前设置；安装时保存端口、客户端位置和 CODEX_HOME，后台沿用。变更后重新安装服务。
+
+| 环境变量 | 默认 | 用途 |
+| --- | --- | --- |
+| `CODEX_INFOBAR_PORT` | `9341` | 调试端口；冲突时改为未占用的 1024–65535 端口 |
+| `CODEX_INFOBAR_APP` | 自动检测 | macOS `.app` 路径；Windows 必须是已安装 Store 包内的可执行文件 |
+| `CODEX_HOME` | 用户目录的 `.codex` | 会话与模型目录位置 |
+| `CODEX_INFOBAR_STATE` | 上述平台数据目录 | 自定义运行目录；安装器保存到启动项，卸载时也需提供相同值，常规安装无需设置 |
+
+macOS 示例：`CODEX_INFOBAR_PORT=9431 npm run install:service`。
+Windows 示例：`$env:CODEX_INFOBAR_PORT='9431'; npm run install:service`。
+
+不通过本项目改变实际自动压缩设置。参考项依据本机模型目录的默认限制推导；`body_after_prefix`、自定义阈值、回合结束策略及额外输出可能使实际触发时间不同，不能预测“还有几分钟压缩”。
+
+## 数据与权限
+
+仅连接本机回环 CDP，验证监听进程身份和地址。**CDP 是高权限、无独立认证的本机调试接口**，同机软件可以访问；不要开放到公网。安装后台自动加载意味着允许它在以后新启动时关闭再打开 Codex；安装当时已运行的实例受到保护。同一实例失败后不反复重启，重启至少间隔 10 分钟。
+
+本地读取对应聊天 JSONL，分块筛选统计事件，不缓存正文、图片、工具参数。只支持本地聊天，不支持云端/远程主机聊天。超大单行可能跳过，压缩计数只代表可读取记录；指标未知显示 `—`。悬停按用户定制只显示指标名称和当前值，具体异常请看日志或运行 `snapshot`。
+
+账户查询只读，不读取或保存 API Key、访问令牌，不自动兑换重置卡。账户缓存存用量及绝对到期时间，身份绑定保存 SHA-256 摘要，不保存原邮箱或工作区 ID。无统计上传、遥测或后台更新下载。
+
+## 开发
+
+```sh
+npm test
+node src/cli.mjs snapshot --thread <聊天UUID>
+node src/cli.mjs preview --thread <聊天UUID>
+node src/cli.mjs attach --port 9341 --position inside
+```
+
+预览只用于布局，不能证明原生挂载成功。单元测试覆盖计数隔离、真实速度计量、长日志、缓存恢复、账户切换、倒计时、圆环和 Windows 进程/端口校验。GitHub Actions 在 macOS / Windows、Node 22 / 24 上运行测试。
+
+## 参考
+
+- [Codex 配置参数](https://learn.chatgpt.com/docs/config-file/config-reference)
+- [Codex app-server 接口](https://learn.chatgpt.com/docs/app-server)
+- [Codex AutoSkin](https://github.com/Finderchangchang/codex-autoskin)：后台检测普通启动再带 CDP 参数打开的方案参考。本项目实现独立编写。
+
+MIT License。

@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Codex Metrics · 状态条预览</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#191919;color:#e8e8e8;font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;--color-token-text-primary:#e6e6e6;--color-token-text-secondary:#999}main{width:min(880px,calc(100% - 40px));margin:70px auto}header{display:flex;align-items:center;gap:12px}h1{font-size:24px;letter-spacing:-.5px;margin:0;font-weight:550}.badge{font-size:11px;padding:3px 8px;border:1px solid #375345;color:#8ec4a8;border-radius:6px}p{color:#999;max-width:680px}.stage{margin-top:48px;padding:24px;background:#202020;border:1px solid #303030;border-radius:20px}.project{font-size:12px;color:#aaa;padding:4px 12px 10px}.composer-surface-chrome{border-radius:20px;background:#303030;padding:16px 18px;min-height:114px}textarea{width:100%;resize:none;border:0;background:none;color:#ddd;font:14px/1.6 inherit;outline:none}.tools{display:flex;justify-content:space-between;align-items:center;color:#aaa;font-size:12px;padding-top:10px}.send{border-radius:50%;background:#3e76cc;color:white;width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;font-size:18px}.settings{display:flex;gap:8px;margin-top:18px;align-items:center;flex-wrap:wrap}button{font:inherit;font-size:12px;border:1px solid #414141;background:#282828;color:#bbb;border-radius:7px;padding:5px 12px;cursor:pointer}button[aria-pressed=true]{background:#353c38;border-color:#5d7e68;color:#cbe7d5}@media(max-width:600px){main{margin:28px auto;width:calc(100% - 24px)}header{align-items:flex-start;flex-direction:column}.stage{padding:12px;margin-top:28px}.tools{font-size:10px}}
+</style></head><body><main>
+<header><h1>把会话状态放在眼前</h1><span class="badge">本机真实数据 · 布局预览</span></header>
+<p>状态条默认位于输入框内底部，五项指标以图标和数值显示，悬停可查看名称与说明。数据来自指定聊天的本地会话记录，每 2 秒刷新。</p>
+<section class="stage"><div class="project">▱ AI_codex　　▰ 此计算机</div>
+<div class="composer-surface-chrome"><textarea rows="2" placeholder="输入框布局示意，可输入文字测试空间…" aria-label="预览输入框"></textarea><div class="tools"><span>＋　 帮我批准</span><span id="model">Codex</span><span class="send">↑</span></div></div>
+</section>
+<div class="settings"><span style="font-size:12px;color:#888">显示位置</span><button data-position="above" aria-pressed="false">输入框上方</button><button data-position="below" aria-pressed="false">输入框下方</button><button data-position="inside" aria-pressed="true">输入框内</button></div>
+</main><script src="./renderer.js"></script><script>
+const hud = window.__CODEX_METRICS_HUD__;
+document.querySelectorAll('[data-position]').forEach(button => button.addEventListener('click', () => {
+  hud.setPosition(button.dataset.position);
+  document.querySelectorAll('[data-position]').forEach(b => b.setAttribute('aria-pressed',String(b === button)));
+}));
+async function refresh() {
+  try {
+    const response = await fetch('./metrics', {cache:'no-store'});
+    if (!response.ok) throw new Error('统计请求失败');
+    const snapshot = await response.json();
+    hud.updateAccount(snapshot.accountUsage ?? null);
+    hud.update(snapshot);
+    document.querySelector('#model').textContent = snapshot.model || 'Codex';
+  } catch {
+    // Keep the preview quiet; the HUD expires values if collection stops.
+  }
+}
+refresh(); setInterval(refresh,2000);
+</script></body></html>
