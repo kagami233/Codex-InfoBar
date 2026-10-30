@@ -329,13 +329,9 @@
       `包含手动和自动压缩，按完成事件去重。${partialHistory ? "当前可读历史可能不完整，此处仅为已记录次数。" : ""}`);
     metric("context", "上下文余量", numeric(values.contextRemainingTokens) ? `${tokens(values.contextRemainingTokens)} tok` : "—",
       `最近记录的上下文占用 ${tokens(values.contextUsedTokens)} / ${tokens(values.contextWindowTokens)} tok；上下文上限不等于压缩阈值。`);
-    const reference = values.compactReference;
-    if (reference?.kind === 'model-default-reference' && numeric(reference.remaining) && numeric(reference.remainingPercent)) {
-      metric('budget', '默认压缩参考余量', `≈${reference.remainingPercent.toFixed(0)}%`,
-        `参考剩余 ${tokens(reference.remaining)} tok（${Math.round(reference.remaining).toLocaleString()} tokens）。估算：按模型目录的默认压缩参考线 ${tokens(reference.limit)} tok 减去最近上下文占用；百分比为参考线剩余比例。不是当前会话最终生效阈值。自定义阈值、body_after_prefix 计量、回合结束策略或额外工具输出都可能提前或推迟压缩。到 0 也不表示必定立即压缩。`);
-    } else if (snapshot.draft) {
-      metric('budget', '剩余压缩余量', '—', '尚未开始对话');
-    }
+    // Model catalog defaults are not the session's resolved trigger budget.
+    // Ignore historical estimates, including snapshots restored from old caches.
+    metric('budget', '剩余压缩余量', '—', '当前会话未上报可验证的自动压缩触发余量。');
     resetMetric(stale);
   }
 

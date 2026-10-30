@@ -4,7 +4,6 @@ import { randomBytes, createHash } from 'node:crypto';
 import { RolloutReader, validateThreadId } from './reader.mjs';
 import { Cdp, listTargets, verifyEndpointOwner } from './cdp.mjs';
 import { SnapshotCache } from './snapshot-cache.mjs';
-import { addCompactReference } from './compact-reference.mjs';
 
 const here = new URL('.', import.meta.url);
 const args = process.argv.slice(2);
@@ -24,7 +23,7 @@ const renderer = (await Promise.all(['renderer.js', 'account-source.js'].map(fil
 const rendererRevision = createHash('sha256').update(renderer).digest('hex');
 const missing = (threadId, error) => ({ threadId, status: 'unavailable', source: 'local-rollout', warning: error.message });
 async function snapshot(threadId) {
-  try { return await addCompactReference(await reader.snapshot(threadId)); } catch (error) { return missing(threadId,error); }
+  try { return { ...(await reader.snapshot(threadId)), compactReference: null }; } catch (error) { return missing(threadId,error); }
 }
 
 async function previewAccountSnapshot() {

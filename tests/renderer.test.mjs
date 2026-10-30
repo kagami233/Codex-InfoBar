@@ -224,7 +224,7 @@ test("routes, unavailable composers and stale snapshots never display old number
   assert.doesNotMatch(env.host.shadowRoot.content(), /数据已过期/);
   const bar = env.host.shadowRoot.children[1];
   assert.equal(bar.title, "");
-  assert.equal(bar.children.length, 5);
+  assert.equal(bar.children.length, 6);
   assert.ok(bar.children.every(node => node.children[1].content() === "—" && node.title.endsWith("：—")));
   assert.doesNotMatch(env.host.shadowRoot.content(), /12\.3 tok\/s/);
   env.api.update(snapshot());
@@ -242,16 +242,16 @@ test("unknown metrics stay unknown and strings are inserted only as text", () =>
   assert.doesNotMatch(text, /<img src=x onerror=alert\(1\)>/);
   assert.match(text, /75\.0%/);
   const metrics = env.host.shadowRoot.children[1].children.filter(node => node.className === "metric");
-  assert.equal(metrics.length, 5);
+  assert.equal(metrics.length, 6);
   assert.ok(metrics.every(node => (node.children[0].tag === "svg" || node.children[0].children[0]?.tag === "svg") && node.attributes["aria-label"] && node.title));
   assert.ok(metrics.every(node => !node.title.includes("<img")));
-  assert.equal(env.host.shadowRoot.children[1].children.length, 5);
+  assert.equal(env.host.shadowRoot.children[1].children.length, 6);
   assert.doesNotMatch(text, /平均输出|缓存|上下文余量/);
   assert.equal(env.host.shadowRoot.children.some((node) => node.tag === "img"), false);
   env.api.update(snapshot({ status: "unavailable", warning: "等待记录" }));
   assert.doesNotMatch(env.host.shadowRoot.content(), /统计暂不可用|等待记录/);
   assert.equal(env.host.shadowRoot.children[1].title, "");
-  assert.equal(env.host.shadowRoot.children[1].children.length, 5);
+  assert.equal(env.host.shadowRoot.children[1].children.length, 6);
   assert.doesNotMatch(env.host.shadowRoot.content(), /75\.0%/);
 });
 
@@ -352,7 +352,7 @@ test("earlier available reset card replaces only the countdown and adds a traili
   const fill = reset().children[0].children[0].children.find(node => node.attributes.class === "quota-fill");
   assert.equal(fill.attributes["stroke-dasharray"], "40 60");
   assert.equal(fill.attributes["stroke-dashoffset"], "-60");
-  assert.equal(env.host.shadowRoot.children[1].children.length, 5);
+  assert.equal(env.host.shadowRoot.children[1].children.length, 6);
   for (const cards of [[], null, [{ expiresAt: 86401 }], [{ expiresAt: 86402 }], [{ expiresAt: 1 }]]) {
     env.api.updateAccount({ observedAt: 1000, resetCards: cards });
     assert.equal(reset().children[1].content(), "1天 00时 00分");
@@ -422,7 +422,7 @@ test('persisted account countdown advances with wall clock, expires correctly, a
   assert.doesNotMatch(reset().title,/账户缓存/);
 });
 
-test('ring prints remaining percentage inside and compaction reference stays marked approximate',()=>{
+test('ring prints remaining percentage and ignores historical model-default compaction estimates',()=>{
   const env=environment();
   env.api.update(snapshot({usageResets:[{limitId:'codex',resetsAt:86401,usedPercent:76}],compactReference:{kind:'model-default-reference',limit:244800,remaining:44800,remainingPercent:18.3}}));
   const metrics=env.host.shadowRoot.children[1].children;
@@ -431,14 +431,14 @@ test('ring prints remaining percentage inside and compaction reference stays mar
   assert.equal(wrap.children.find(n=>n.attributes.class==='quota-label').textContent,'24');
   assert.equal(ring.children.find(n=>n.attributes.class==='quota-fill').attributes['stroke-dashoffset'],'-76');
   const budget=metrics.find(n=>n.attributes['data-metric']==='budget');
-  assert.equal(budget.children[1].textContent,'≈18%');
-  assert.equal(budget.title,'剩余压缩余量：≈18%');
+  assert.equal(budget.children[1].textContent,'—');
+  assert.equal(budget.title,'剩余压缩余量：—');
   assert.doesNotMatch(budget.title,/tok/);
 });
 
 test('hover text contains only the requested name and current display value',()=>{
  const env=environment();env.api.update(snapshot({compactionCount:7,usageResets:[{limitId:'codex',resetsAt:301,usedPercent:78}],compactReference:{kind:'model-default-reference',limit:100,remaining:13,remainingPercent:13}}));
- const expected={speed:'平均token输出速度：12.3 tok/s',cache:'命中缓存：75.0%',compact:'压缩次数：7次',context:'上下文余量：10.0k tok',budget:'剩余压缩余量：≈13%',reset:'套餐剩余：22%；重置剩余时间：0天 00时 05分'};
+ const expected={speed:'平均token输出速度：12.3 tok/s',cache:'命中缓存：75.0%',compact:'压缩次数：7次',context:'上下文余量：10.0k tok',budget:'剩余压缩余量：—',reset:'套餐剩余：22%；重置剩余时间：0天 00时 05分'};
  for(const item of env.host.shadowRoot.children[1].children)assert.equal(item.title,expected[item.attributes['data-metric']]);
 });
 

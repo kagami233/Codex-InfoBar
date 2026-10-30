@@ -15,10 +15,6 @@ function clean(entry, now) {
   const snapshot = { threadId:value.threadId.toLowerCase(), status:'ok', source:'local-rollout',
     historyComplete:value.historyComplete === true, active:false };
   for (const key of NUMBERS) snapshot[key] = Number.isFinite(value[key]) && value[key] >= 0 ? value[key] : null;
-  const ref=value.compactReference;
-  if (ref?.kind==='model-default-reference' && ['limit','remaining','remainingPercent'].every(k=>Number.isFinite(ref[k])&&ref[k]>=0)) {
-    snapshot.compactReference={kind:ref.kind,limit:ref.limit,remaining:ref.remaining,remainingPercent:ref.remainingPercent};
-  }
   // Account limits/cards are deliberately reread from the signed-in client.
   return { snapshot, receivedAt:at };
 }
