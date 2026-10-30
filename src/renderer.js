@@ -74,13 +74,18 @@
     while (pending.length && budget-- > 0) {
       const item = pending.pop();
       if (item.fiber.stateNode === composer) {
+        let emptyConversation = false;
         for (let cursor = item; cursor; cursor = cursor.parent) {
           const props = cursor.fiber.memoizedProps;
+          if (props && Object.prototype.hasOwnProperty.call(props, 'conversationId') && props.conversationId === null) {
+            if (typeof props.hostId === 'string' && props.hostId !== 'local') return {id:null,draft:false};
+            emptyConversation = true;
+          }
           if (typeof props?.conversationId !== 'string' || typeof props?.hostId !== 'string') continue;
           const id = new RegExp(`^${UUID}$`, 'i').exec(props.conversationId)?.[1]?.toLowerCase();
           return { id: props.hostId === 'local' ? id ?? null : null };
         }
-        return null;
+        return emptyConversation ? {id:null,draft:true} : null;
       }
       for (let child = item.fiber.child; child && budget-- > 0; child = child.sibling) {
         if (ancestors.has(child)) pending.push({ fiber: child, parent: item });
@@ -116,6 +121,16 @@
       }
       return ids.size === 1 ? Array.from(ids)[0] : null;
     } catch { return null; }
+  }
+
+  function isNewConversation(composer) {
+    try {
+      const url = new URL(window.location.href);
+      if (url.protocol !== 'app:' || !['/index.html','/detached-window.html'].includes(url.pathname)) return false;
+      const initial = url.searchParams.get('initialRoute')?.split('?')[0];
+      if (['/avatar-overlay','/spotlight','/global-dictation'].includes(initial)) return false;
+      return composerThread(composer)?.draft === true;
+    } catch { return false; }
   }
 
   function visible(node) {
@@ -318,6 +333,8 @@
     if (reference?.kind === 'model-default-reference' && numeric(reference.remaining) && numeric(reference.remainingPercent)) {
       metric('budget', '默认压缩参考余量', `≈${reference.remainingPercent.toFixed(0)}%`,
         `参考剩余 ${tokens(reference.remaining)} tok（${Math.round(reference.remaining).toLocaleString()} tokens）。估算：按模型目录的默认压缩参考线 ${tokens(reference.limit)} tok 减去最近上下文占用；百分比为参考线剩余比例。不是当前会话最终生效阈值。自定义阈值、body_after_prefix 计量、回合结束策略或额外工具输出都可能提前或推迟压缩。到 0 也不表示必定立即压缩。`);
+    } else if (snapshot.draft) {
+      metric('budget', '剩余压缩余量', '—', '尚未开始对话');
     }
     resetMetric(stale);
   }
@@ -325,18 +342,24 @@
   function refresh() {
     if (removed) return;
     const threadId = getThreadId();
+    const composer = findComposer();
+    const draft = !threadId && isNewConversation(composer);
     if (threadId !== lastRoute) {
       const cached = snapshots.get(threadId);
       snapshot = cached?.snapshot ?? (threadId ? { threadId, status: 'unavailable' } : null);
       receivedAt = cached?.receivedAt ?? Date.now();
       lastRoute = threadId;
     }
-    if (!threadId) {
+    if (draft) {
+      // No rollout exists yet. Keep account data, clear all per-chat values.
+      snapshot = {threadId:null,status:'unavailable',draft:true};
+      receivedAt = Date.now();
+    }
+    if (!threadId && !draft) {
       host.remove();
       mounted = false;
       return;
     }
-    const composer = findComposer();
     if (!composer?.parentElement) {
       // Occluded/background windows may temporarily have no measurable layout.
       // Keep their own node and data; never borrow another window's snapshot.
@@ -413,7 +436,7 @@
       return true;
     },
     getStatus() {
-      return { mounted, threadId: getThreadId(), position, stale: Boolean(snapshot && Date.now() - receivedAt > EXPIRY_MS), removed, instanceId };
+      return { mounted, threadId: getThreadId(), position, stale: Boolean(snapshot && Date.now() - receivedAt > EXPIRY_MS), removed, instanceId, newConversation: Boolean(snapshot?.draft) };
     },
     remove() {
       removed = true;

@@ -441,3 +441,34 @@ test('hover text contains only the requested name and current display value',()=
  const expected={speed:'平均token输出速度：12.3 tok/s',cache:'命中缓存：75.0%',compact:'压缩次数：7次',context:'上下文余量：10.0k tok',budget:'剩余压缩余量：≈13%',reset:'套餐剩余：22%；重置剩余时间：0天 00时 05分'};
  for(const item of env.host.shadowRoot.children[1].children)assert.equal(item.title,expected[item.attributes['data-metric']]);
 });
+
+
+test('empty native composer shows account quota before a real chat ID exists',()=>{
+ const env=environment('/index.html');
+ env.setNativeThread(null,null);
+ assert.equal(env.api.getThreadId(),null);
+ assert.equal(env.api.getStatus().mounted,true);
+ assert.equal(env.api.getStatus().newConversation,true);
+ assert.equal(env.host.shadowRoot.children[1].children.length,6);
+ env.api.updateAccount({observedAt:1000,usageResets:[{limitId:'codex',resetsAt:301,usedPercent:78}],resetCards:[]});
+ const items=env.host.shadowRoot.children[1].children;
+ assert.ok(items.filter(n=>n.attributes['data-metric']!=='reset').every(n=>n.children[1].textContent==='—'));
+ assert.equal(items.find(n=>n.attributes['data-metric']==='reset').title,'套餐剩余：22%；重置剩余时间：0天 00时 05分');
+ env.setNativeThread(OTHER);
+ assert.equal(env.api.getThreadId(),OTHER);
+ assert.equal(env.api.update(snapshot({threadId:OTHER,averageOutputTps:73})),true);
+ assert.match(env.host.shadowRoot.content(),/73\.0 tok\/s/);
+ env.setNativeThread(null,null,OTHER);
+ assert.equal(env.api.getStatus().newConversation,true);
+ assert.doesNotMatch(env.host.shadowRoot.content(),/73\.0 tok\/s/);
+ assert.equal(env.api.update(snapshot({threadId:OTHER})),false);
+});
+
+test('blank remote and auxiliary composers do not qualify as new local chats',()=>{
+ const env=environment('/index.html');
+ env.setNativeThread(null,'remote');
+ assert.equal(env.api.getStatus().mounted,false);
+ env.navigate('/index.html?initialRoute=%2Fspotlight');
+ env.setNativeThread(null,null);
+ assert.equal(env.api.getStatus().mounted,false);
+});
