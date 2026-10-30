@@ -14,3 +14,14 @@ test('Windows detects a single main process, excludes Electron subprocesses, nor
 test('PowerShell literals cannot interpolate paths or apostrophes',()=>{
  assert.equal(psLiteral("C:\\O'Brien\\$(example).exe"),"'C:\\O''Brien\\$(example).exe'");
 });
+
+test('Windows adapter executes real PowerShell and reads current process and listeners', {skip:process.platform!=='win32'}, async()=>{
+ const {powershell,processes,listeners}=await import('../src/platform.mjs');
+ assert.equal(await powershell("'中文 O''Brien'"),"中文 O'Brien");
+ const rows=await processes();
+ assert.ok(Array.isArray(rows));
+ const self=rows.find(row=>row.pid===process.pid);
+ assert.ok(self,'CIM must include current Node process');
+ assert.ok(typeof self.command==='string'&&self.command.toLowerCase().endsWith('node.exe'));
+ assert.ok(Array.isArray(await listeners(9341)));
+});

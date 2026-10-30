@@ -146,7 +146,7 @@ node src/cli.mjs preview --thread <聊天UUID>
 node src/cli.mjs attach --port 9341 --position inside
 ```
 
-预览只用于布局，不能证明原生挂载成功。单元测试覆盖计数隔离、真实速度计量、长日志、缓存恢复、账户切换、倒计时、圆环和 Windows 进程/端口校验。GitHub Actions 在 macOS / Windows、Node 22 / 24 上运行测试。
+预览只用于布局，不能证明原生挂载成功。Windows CI 还实际运行 PowerShell、CIM 进程查询及 TCP 监听查询。单元测试覆盖计数隔离、真实速度计量、长日志、缓存恢复、账户切换、倒计时、圆环和 Windows 进程/端口校验。GitHub Actions 在 macOS / Windows、Node 22 / 24 上运行测试。
 
 ## 参考
 

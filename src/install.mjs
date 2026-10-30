@@ -5,6 +5,8 @@ import {fileURLToPath} from 'node:url';
 import {execFile,spawn} from 'node:child_process';
 import {promisify} from 'node:util';
 import {stateRoot,resolveApp,processes,powershell,psLiteral,port} from './platform.mjs';
+const [major,minor]=process.versions.node.split('.').map(Number);
+if(major<22||(major===22&&minor<17))throw new Error('Node.js 22.17 or newer is required');
 const run=promisify(execFile),label='local.codex.infobar.watcher';
 const runtime=path.join(stateRoot,'runtime'),script=path.join(runtime,'src/watcher.mjs');
 const source=fileURLToPath(new URL('../',import.meta.url));
