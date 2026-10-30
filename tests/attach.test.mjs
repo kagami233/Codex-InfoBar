@@ -10,9 +10,9 @@ const end = cli.lastIndexOf('\ntry {');
 assert.ok(start >= 0 && end > start, 'attach entry point must be present');
 const attachSource = cli.slice(start, end);
 
-async function runAttach({ signalAt = 'update', failPosition = false, ownerFailure = false } = {}) {
+async function runAttach({ signalAt = 'update', failPosition = false, ownerFailure = false, initialRevision = null } = {}) {
   const handlers = {};
-  const state = { installed: false, closed: false, installs: 0, removes: 0, evaluations: 0, peakEvaluations: 0, ownerChecks: 0, lists: 0 };
+  const state = { installed: initialRevision !== null, revision: initialRevision, closed: false, installs: 0, removes: 0, evaluations: 0, peakEvaluations: 0, ownerChecks: 0, lists: 0 };
   class FakeCdp {
     closed = false;
     async open() {
@@ -32,7 +32,7 @@ async function runAttach({ signalAt = 'update', failPosition = false, ownerFailu
         if (expression.startsWith('Boolean(')) {
           if (signalAt === 'ready') handlers.SIGINT();
           await Promise.resolve();
-          return state.installed;
+          return state.installed && state.revision === 'fixture-revision';
         }
         if (expression === 'INSTALL_RENDERER') {
           state.installed = true;
@@ -41,6 +41,7 @@ async function runAttach({ signalAt = 'update', failPosition = false, ownerFailu
           await Promise.resolve();
           return {};
         }
+        if (expression.includes('.rendererRevision =')) state.revision = 'fixture-revision';
         if (expression.includes('.setPosition(') && failPosition) {
           handlers.SIGINT();
           throw new Error('position script failed');
@@ -54,7 +55,7 @@ async function runAttach({ signalAt = 'update', failPosition = false, ownerFailu
   }
   const context = vm.createContext({
     SnapshotCache: class { async load() { return new Map(); } async save() {} },
-    options: { port: 9341, position: 'above' }, renderer: 'INSTALL_RENDERER', Cdp: FakeCdp,
+    options: { port: 9341, position: 'above' }, renderer: 'INSTALL_RENDERER', rendererRevision: 'fixture-revision', Cdp: FakeCdp,
     verifyEndpointOwner: async () => {
       state.ownerChecks++;
       if (ownerFailure && state.ownerChecks === 3) throw new Error('owner changed');
@@ -104,4 +105,12 @@ test('a script error after injection removes the renderer before losing the clie
   assert.equal(result.removes, 1);
   assert.equal(result.installed, false);
   assert.equal(result.closed, true);
+});
+
+test('source updates replace an older renderer while the matching revision is retained', async () => {
+  const old = await runAttach({ initialRevision: 'previous-revision' });
+  assert.equal(old.installs, 1);
+  assert.equal(old.revision, 'fixture-revision');
+  const current = await runAttach({ initialRevision: 'fixture-revision' });
+  assert.equal(current.installs, 0);
 });

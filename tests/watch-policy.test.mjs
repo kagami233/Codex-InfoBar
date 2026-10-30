@@ -23,3 +23,32 @@ test('foreign port and cooldown prevent restart', () => {
   p.decide({pid:30, now:30000});
   assert.equal(p.decide({pid:30, now:50000}), 'waiting');
 });
+
+test('a debug-enabled launch is never restarted even when endpoint readiness is slow or fails',()=>{
+ const p=new WatchPolicy(null,0);
+ assert.equal(p.decide({pid:20,debugRequested:true,now:0}),'debug-starting');
+ assert.equal(p.decide({pid:20,debugRequested:true,now:20000}),'debug-starting');
+ assert.equal(p.decide({pid:20,debugRequested:true,now:60001}),'debug-unavailable');
+ assert.equal(p.decide({pid:20,debugRequested:true,occupied:true,now:999999}),'debug-unavailable');
+ assert.equal(p.decide({pid:20,debugRequested:true,ready:true,now:1000000}),'attach');
+ assert.equal(p.attempted.size,0);
+});
+
+test('Windows passive mode never closes a client launched through an unconfigured Store pin',()=>{
+ const p=new WatchPolicy(null,0);
+ for(const now of [0,15000,600001,9999999])assert.equal(p.decide({pid:20,autoRestart:false,now}),'needs-debug-launch');
+ assert.equal(p.attempted.size,0);
+ assert.equal(p.decide({pid:20,autoRestart:false,ready:true}),'attach');
+});
+
+test('a successful mount does not impose the failure cooldown on the next user launch',()=>{
+ const p=new WatchPolicy(null,0);
+ assert.equal(p.decide({pid:20,now:0}),'waiting');
+ assert.equal(p.decide({pid:20,now:15000}),'restart');
+ p.protect(21);
+ assert.equal(p.decide({pid:21,ready:true,now:20000}),'attach');
+ assert.equal(p.decide({pid:null,now:25000}),'idle');
+ assert.equal(p.decide({pid:22,now:26000}),'waiting');
+ assert.equal(p.decide({pid:22,now:41000}),'restart');
+ assert.equal(p.decide({pid:22,now:999999}),'failed','same PID must still never be restarted twice');
+});

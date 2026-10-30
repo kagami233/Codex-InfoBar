@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import http from 'node:http';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, createHash } from 'node:crypto';
 import { RolloutReader, validateThreadId } from './reader.mjs';
 import { Cdp, listTargets, verifyEndpointOwner } from './cdp.mjs';
 import { SnapshotCache } from './snapshot-cache.mjs';
@@ -21,6 +21,7 @@ if (!['above','below','inside'].includes(options.position)) throw new Error('不
 if (options['account-snapshot'] && mode !== 'preview') throw new Error('--account-snapshot 仅用于预览；原生客户端直接读取当前账户。');
 const reader = new RolloutReader();
 const renderer = (await Promise.all(['renderer.js', 'account-source.js'].map(file => fs.readFile(new URL(file, here), 'utf8')))).join('\n;\n');
+const rendererRevision = createHash('sha256').update(renderer).digest('hex');
 const missing = (threadId, error) => ({ threadId, status: 'unavailable', source: 'local-rollout', warning: error.message });
 async function snapshot(threadId) {
   try { return await addCompactReference(await reader.snapshot(threadId)); } catch (error) { return missing(threadId,error); }
@@ -116,10 +117,11 @@ async function attach() {
           }
           if (stopping) break;
           try {
-            let ready = await client.evaluate('Boolean(window.__CODEX_METRICS_HUD__)');
+            let ready = await client.evaluate(`Boolean(window.__CODEX_METRICS_HUD__?.rendererRevision === ${JSON.stringify(rendererRevision)})`);
             if (stopping) break;
             if (!ready) {
               await client.evaluate(renderer);
+              await client.evaluate(`window.__CODEX_METRICS_HUD__.rendererRevision = ${JSON.stringify(rendererRevision)}`);
               await client.evaluate(`window.__CODEX_METRICS_HUD__.setPosition(${JSON.stringify(options.position)})`);
               if (sharedSnapshots.size) await client.evaluate(`window.__CODEX_METRICS_HUD__.primeSnapshots(${JSON.stringify([...sharedSnapshots.values()])})`);
             }

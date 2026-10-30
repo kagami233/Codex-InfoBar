@@ -29,21 +29,22 @@
       flex:0 0 auto; box-sizing:border-box; color:var(--color-token-text-secondary, #a6a6a6);
       font:11px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
     :host([hidden]) { display:none !important; }
-    .bar { display:flex; flex-wrap:wrap; align-items:center; gap:3px 14px; padding:5px 10px;
+    .bar { display:flex; flex-wrap:nowrap; align-items:center; gap:3px 14px; padding:5px 10px;
       border:1px solid color-mix(in srgb,currentColor 15%,transparent); border-radius:9px;
-      background:color-mix(in srgb,currentColor 3%,transparent); min-width:0; }
-    .metric { display:inline-flex; align-items:center; gap:6px; white-space:nowrap; }
+      background:color-mix(in srgb,currentColor 3%,transparent); min-width:0; overflow-x:auto; }
+    .metric { display:inline-flex; align-items:center; flex:0 0 auto; min-height:26px; gap:6px; white-space:nowrap; line-height:normal; }
+    .value { display:inline-flex; align-items:center; line-height:normal; min-height:16px; }
     .icon { display:block; width:14px; height:14px; flex:0 0 14px; opacity:.85; }
     .metric:hover .icon { opacity:1; }
     .icon.quota-ring { opacity:1; width:26px; height:26px; flex-basis:26px; }
     .quota-wrap { position:relative; display:inline-grid; place-items:center; width:26px; height:26px; flex:0 0 26px; }
-    .quota-label { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:10.4px; line-height:16.5px; transform:translateY(-0.5px); pointer-events:none; }
+    .quota-label { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:10.4px; line-height:normal; pointer-events:none; }
     .quota-track { stroke:currentColor; opacity:.24; }
     .quota-fill { stroke:var(--codex-hud-quota-color, #9be8c2); }
     .quota-unknown { opacity:.5; }
     .reset-card { color:var(--codex-hud-card-color, #e9c77b); opacity:1; }
     .value, .quota-label { color:var(--color-token-text-primary, inherit); font-variant-numeric:tabular-nums; font-weight:500; }
-    @media(max-width:600px) { .quota-label { line-height:15px; } .bar { gap:3px 10px; font-size:10px; padding:4px 8px; } }
+    @media(max-width:600px) { .bar { gap:3px 10px; padding:4px 8px; } }
   `;
   const bar = document.createElement("div");
   bar.className = "bar";
@@ -52,13 +53,53 @@
   bar.setAttribute("aria-label", "Codex 会话统计");
   shadow.append(style, bar);
 
+  function composerThread(composer) {
+    if (!composer) return null;
+    const key = Object.getOwnPropertyNames(composer).find(key => key.startsWith('__reactFiber$'));
+    let fiber = key && composer[key];
+    if (!fiber) return null;
+    // DOM nodes can retain the previous React fiber after a commit. Follow the
+    // mounted root's child links, not an old fiber's props or its alternate.
+    const ancestors = new Set();
+    let root;
+    for (let depth = 0; fiber && depth < 512; depth++, fiber = fiber.return) {
+      ancestors.add(fiber);
+      if (fiber.alternate) ancestors.add(fiber.alternate);
+      root = fiber;
+    }
+    const current = root?.stateNode?.current;
+    if (!current || !ancestors.has(current)) return null;
+    const pending = [{ fiber: current, parent: null }];
+    let budget = 4096;
+    while (pending.length && budget-- > 0) {
+      const item = pending.pop();
+      if (item.fiber.stateNode === composer) {
+        for (let cursor = item; cursor; cursor = cursor.parent) {
+          const props = cursor.fiber.memoizedProps;
+          if (typeof props?.conversationId !== 'string' || typeof props?.hostId !== 'string') continue;
+          const id = new RegExp(`^${UUID}$`, 'i').exec(props.conversationId)?.[1]?.toLowerCase();
+          return { id: props.hostId === 'local' ? id ?? null : null };
+        }
+        return null;
+      }
+      for (let child = item.fiber.child; child && budget-- > 0; child = child.sibling) {
+        if (ancestors.has(child)) pending.push({ fiber: child, parent: item });
+      }
+    }
+    return null;
+  }
+
   function getThreadId() {
     try {
       const url = new URL(window.location.href);
       const path = url.hash.startsWith("#/") ? url.hash.slice(1).split("?")[0] : url.pathname;
       const direct = ROUTE.exec(path)?.[1]?.toLowerCase();
       if (direct) return direct;
-      if (url.protocol !== 'app:' || path !== '/index.html') return null;
+      if (url.protocol !== 'app:' || !['/index.html', '/detached-window.html'].includes(path)) return null;
+      // New native chats keep client-new-thread sidebar keys after the first
+      // response. The mounted composer already has the real rollout UUID.
+      const thread = composerThread(findComposer());
+      if (thread) return thread.id;
       // Native desktop uses an in-memory router. The active (not selected)
       // sidebar row carries an explicit thread key and host identity.
       const initial = url.searchParams.get('initialRoute');
@@ -66,36 +107,12 @@
       const rows = Array.from(document.querySelectorAll('[data-app-action-sidebar-thread-active="true"]'));
       if (!rows.length) return null;
       const ids = new Set();
-      const clients = new Set();
       for (const row of rows) {
         if (row.getAttribute('data-app-action-sidebar-thread-host-id') !== 'local') return null;
         const key = row.getAttribute('data-app-action-sidebar-thread-id');
         const id = /^local:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(key ?? '')?.[1];
-        if (id) ids.add(id.toLowerCase());
-        else {
-          const client = new RegExp(`^local:(client-new-thread:${UUID})$`, 'i').exec(key ?? '')?.[1];
-          if (!client) return null;
-          clients.add(client);
-        }
-      }
-      if (!clients.size) return ids.size === 1 ? Array.from(ids)[0] : null;
-      if (clients.size !== 1 || ids.size) return null;
-      // Some completed local chats keep their provisional sidebar identity.
-      // Resolve only through the visible composer's matching thread scope;
-      // inspect ID/host fields only, never message/editor content or app stores.
-      const client = Array.from(clients)[0];
-      for (const composer of document.querySelectorAll('[data-composer-body]')) {
-        if (!visible(composer)) continue;
-        const key = Object.keys(composer).find(k => k.startsWith('__reactFiber$'));
-        let fiber = key ? composer[key] : null;
-        for (let depth = 0; fiber && depth < 100; depth++, fiber = fiber.return) {
-          const props = fiber.memoizedProps;
-          if (props?.clientThreadId !== client) continue;
-          if (props.hostId != null && props.hostId !== 'local') return null;
-          if (props.hostId === 'local' && typeof props.conversationId === 'string' && new RegExp(`^${UUID}$`, 'i').test(props.conversationId)) {
-            ids.add(props.conversationId.toLowerCase());
-          }
-        }
+        if (!id) return null;
+        ids.add(id.toLowerCase());
       }
       return ids.size === 1 ? Array.from(ids)[0] : null;
     } catch { return null; }
@@ -226,7 +243,6 @@
     const quotaLabel = iconName === "reset" ? `；${remainingPercent !== null ? `剩余 ${Math.round(remainingPercent * 10) / 10}%` : "剩余额度未知"}` : "";
     item.setAttribute("aria-label", `${label}：${value}${quotaLabel}`);
     item.setAttribute("data-metric", iconName);
-    if (iconName === "reset") item.style.whiteSpace = "normal";
     const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     for (const [name, value] of Object.entries({ class: "icon", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", "stroke-width": "1.7", "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true", focusable: "false" })) {
       icon.setAttribute(name, value);
