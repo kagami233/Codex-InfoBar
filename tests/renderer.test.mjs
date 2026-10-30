@@ -67,6 +67,10 @@ function environment(path = `/local/${THREAD}`) {
     hideComposer() { composerVisible = false; for (const callback of timers.values()) callback(); },
     setActive(rows) { activeRows = rows.map(([id, host]) => { const row = new Element('row'); row.setAttribute('data-app-action-sidebar-thread-id', id); row.setAttribute('data-app-action-sidebar-thread-host-id', host); return row; }); this.tick(1); },
     useModernComposer() { modernComposer = true; this.tick(1); },
+    setComposerScopes(props) {
+      composer.__reactFiber$test = props.reduceRight((parent, memoizedProps) => ({return:parent,memoizedProps}),null);
+      this.tick(1);
+    },
     background() { document.hidden = true; composerVisible = false; this.tick(1); },
     foreground() { document.hidden = false; composerVisible = true; this.tick(1); },
   };
@@ -398,4 +402,25 @@ test('hover text contains only the requested name and current display value',()=
  const env=environment();env.api.update(snapshot({compactionCount:7,usageResets:[{limitId:'codex',resetsAt:301,usedPercent:78}],compactReference:{kind:'model-default-reference',limit:100,remaining:13,remainingPercent:13}}));
  const expected={speed:'平均token输出速度：12.3 tok/s',cache:'命中缓存：75.0%',compact:'压缩次数：7次',context:'上下文余量：10.0k tok',budget:'剩余压缩余量：≈13%',reset:'套餐剩余：22%；重置剩余时间：0天 00时 05分'};
  for(const item of env.host.shadowRoot.children[1].children)assert.equal(item.title,expected[item.attributes['data-metric']]);
+});
+
+
+test('provisional sidebar identity resolves only through the matching local composer scope',()=>{
+ const env=environment('/index.html'),client=`client-new-thread:${OTHER}`;
+ env.useModernComposer();
+ env.setActive([[`local:${client}`,'local']]);
+ assert.equal(env.api.getThreadId(),null);
+ env.setComposerScopes([{conversationId:OTHER},{conversationId:THREAD,hostId:'local',clientThreadId:client}]);
+ assert.equal(env.api.getThreadId(),THREAD);
+ assert.equal(env.api.update(snapshot()),true);
+ assert.equal(env.api.getStatus().mounted,true);
+ env.setComposerScopes([{conversationId:THREAD,hostId:'local',clientThreadId:'client-new-thread:wrong'}]);
+ assert.equal(env.api.getThreadId(),null);
+ env.setComposerScopes([{conversationId:THREAD,hostId:'remote',clientThreadId:client}]);
+ assert.equal(env.api.getThreadId(),null);
+ env.setComposerScopes([{conversationId:THREAD,hostId:'local',clientThreadId:client},{conversationId:OTHER,hostId:'local',clientThreadId:client}]);
+ assert.equal(env.api.getThreadId(),null);
+ env.setComposerScopes([{conversationId:THREAD,hostId:'local',clientThreadId:client}]);
+ env.setActive([[`local:${client}`,'remote']]);
+ assert.equal(env.api.getThreadId(),null);
 });

@@ -66,12 +66,36 @@
       const rows = Array.from(document.querySelectorAll('[data-app-action-sidebar-thread-active="true"]'));
       if (!rows.length) return null;
       const ids = new Set();
+      const clients = new Set();
       for (const row of rows) {
         if (row.getAttribute('data-app-action-sidebar-thread-host-id') !== 'local') return null;
         const key = row.getAttribute('data-app-action-sidebar-thread-id');
         const id = /^local:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(key ?? '')?.[1];
-        if (!id) return null;
-        ids.add(id.toLowerCase());
+        if (id) ids.add(id.toLowerCase());
+        else {
+          const client = new RegExp(`^local:(client-new-thread:${UUID})$`, 'i').exec(key ?? '')?.[1];
+          if (!client) return null;
+          clients.add(client);
+        }
+      }
+      if (!clients.size) return ids.size === 1 ? Array.from(ids)[0] : null;
+      if (clients.size !== 1 || ids.size) return null;
+      // Some completed local chats keep their provisional sidebar identity.
+      // Resolve only through the visible composer's matching thread scope;
+      // inspect ID/host fields only, never message/editor content or app stores.
+      const client = Array.from(clients)[0];
+      for (const composer of document.querySelectorAll('[data-composer-body]')) {
+        if (!visible(composer)) continue;
+        const key = Object.keys(composer).find(k => k.startsWith('__reactFiber$'));
+        let fiber = key ? composer[key] : null;
+        for (let depth = 0; fiber && depth < 100; depth++, fiber = fiber.return) {
+          const props = fiber.memoizedProps;
+          if (props?.clientThreadId !== client) continue;
+          if (props.hostId != null && props.hostId !== 'local') return null;
+          if (props.hostId === 'local' && typeof props.conversationId === 'string' && new RegExp(`^${UUID}$`, 'i').test(props.conversationId)) {
+            ids.add(props.conversationId.toLowerCase());
+          }
+        }
       }
       return ids.size === 1 ? Array.from(ids)[0] : null;
     } catch { return null; }
