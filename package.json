@@ -1,6 +1,6 @@
 {
  "name":"codex-infobar",
- "version":"0.2.1",
+ "version":"0.3.0",
  "description":"A local, persistent metrics bar inside Codex Desktop for macOS and Windows",
  "private":true,
  "type":"module",
