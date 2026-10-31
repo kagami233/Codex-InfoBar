@@ -12,6 +12,7 @@
   "install:service":"node src/install.mjs",
   "uninstall:service":"node src/install.mjs --uninstall",
   "doctor":"node src/doctor.mjs",
+  "auto-reset":"node src/reset-settings.mjs",
   "preview":"node src/cli.mjs preview",
   "snapshot":"node src/cli.mjs snapshot",
   "attach":"node src/cli.mjs attach"

@@ -21,7 +21,109 @@
   const CACHE_KEY = 'codex-metrics-hud.account-cache.v1';
   const CACHE_AGE = 7 * 86400000;
   let scope = null, identityPending = null, generation = 0, latest = null;
+  // Separate, explicit InfoBar opt-in. The native consume RPC independently
+  // enforces the user's read-only "Allow Codex to use resets" setting.
+  const AUTO_KEY = 'codex-infobar.auto-reset.v1:';
+  const JOURNAL_KEY = 'codex-infobar.reset-attempts.v1:';
+  let autoInterval = null, autoBusy = false, autoState = 'disabled';
+  let liveCards = [], autoRequests = new Map();
   const storage = (() => { try { return window.localStorage ?? null; } catch { return null; } })();
+  const digest = async value => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',
+    new TextEncoder().encode(value))), b => b.toString(16).padStart(2, '0')).join('');
+  function autoEnabled() {
+    try { return Boolean(scope && storage?.getItem(AUTO_KEY + scope) === 'true'); } catch { return false; }
+  }
+  function syncAutoTimer() {
+    if (autoInterval !== null) clearInterval(autoInterval);
+    autoInterval = null;
+    autoState = autoEnabled() ? 'watching' : 'disabled';
+    if (autoEnabled() && !removed) autoInterval = setInterval(tickAutoReset, 5000);
+  }
+  function tickAutoReset() {
+    if (removed || !autoEnabled() || (lastAttemptAt !== null && Date.now() - lastAttemptAt < 5000)) return;
+    // Absolute expiry also works after waking from sleep. Cached cards only
+    // schedule a fresh read; they can never authorize a redemption.
+    const cards = liveCards.length ? liveCards : latest?.resetCards ?? [];
+    if (cards.some(c => c.expiresAt * 1000 > Date.now() && c.expiresAt * 1000 - Date.now() <= 90000)) refresh();
+  }
+  function autoRpc(method, params) {
+    return new Promise((resolve, reject) => {
+      const id = `codex-infobar-reset:${crypto.randomUUID()}`;
+      const fail = () => { autoRequests.delete(id); reject(new Error('unconfirmed')); };
+      const timer = setTimeout(fail, TIMEOUT_MS);
+      autoRequests.set(id, { resolve, reject, timer });
+      try {
+        Promise.resolve(window.electronBridge.sendMessageFromView({type:'mcp-request', hostId:'local',
+          request:{id,method,params}, timeoutMs:TIMEOUT_MS})).catch(() => { clearTimeout(timer); fail(); });
+      } catch { clearTimeout(timer); fail(); }
+    });
+  }
+  function rawCards(result) {
+    return (Array.isArray(result?.rateLimitResetCredits?.credits) ? result.rateLimitResetCredits.credits : [])
+      .filter(c => record(c) && c.status === 'available' && c.resetType === 'codexRateLimits' &&
+        typeof c.id === 'string' && c.id.length > 0 && c.id.length <= 512 && seconds(c.expiresAt))
+      .map(c => ({id:c.id, expiresAt:c.expiresAt}));
+  }
+  function retireAutoRequests() {
+    for (const request of autoRequests.values()) { clearTimeout(request.timer); request.reject(new Error('retired')); }
+    autoRequests.clear();
+  }
+  async function maybeAutoReset() {
+    if (removed || autoBusy || !autoEnabled() || !crypto.subtle || typeof window.navigator?.locks?.request !== 'function') return;
+    if (!liveCards.some(c => c.expiresAt * 1000 > Date.now() && c.expiresAt * 1000 - Date.now() <= 60000)) return;
+    const accountScope = scope, epoch = generation;
+    const active = () => !removed && generation === epoch && scope === accountScope && autoEnabled();
+    autoBusy = true;
+    try {
+      // One lock across every chat/window and collector sharing this app origin.
+      await window.navigator.locks.request('codex-infobar-reset:' + accountScope, {ifAvailable:true}, async lock => {
+        if (!lock || !active()) return;
+        const identity = await autoRpc('account/read', {refreshToken:false});
+        if (!active() || identity?.account?.type !== 'chatgpt' || typeof identity.account.email !== 'string' ||
+            typeof identity?.workspaceRouting?.chatgptAccountId !== 'string') return;
+        const verified = await digest(JSON.stringify([identity.account.email,identity.workspaceRouting.chatgptAccountId]));
+        if (!active() || verified !== accountScope) return;
+        const fresh = await autoRpc('account/rateLimits/read', {});
+        if (!active()) return;
+        const card = rawCards(fresh).filter(c => c.expiresAt * 1000 > Date.now() && c.expiresAt * 1000 - Date.now() <= 60000)
+          .sort((a,b) => a.expiresAt - b.expiresAt)[0];
+        if (!card) return;
+        const hash = await digest(card.id);
+        if (!active()) return;
+        const key = JOURNAL_KEY + accountScope;
+        let journal;
+        try { const raw = storage.getItem(key); journal = raw ? JSON.parse(raw) : {}; } catch { autoState = 'storage-error'; return; }
+        if (!record(journal)) { autoState = 'storage-error'; return; }
+        // Refuse an oversized/corrupt journal instead of forgetting a possibly
+        // successful attempt and creating another idempotency key.
+        if (Object.keys(journal).length > 200) { autoState = 'storage-error'; return; }
+        if (Object.entries(journal).some(([id, attempt]) => id !== hash && numeric(attempt?.lastAttemptAt) && Date.now() - attempt.lastAttemptAt < 60000)) return;
+        for (const [id, attempt] of Object.entries(journal)) if (seconds(attempt?.expiresAt) && attempt.expiresAt * 1000 < Date.now()) delete journal[id];
+        const old = journal[hash];
+        if (old && (!record(old) || typeof old.key !== 'string' || !numeric(old.lastAttemptAt) || !Number.isInteger(old.attempts))) {
+          autoState = 'storage-error'; return;
+        }
+        if (old?.terminal || old?.attempts >= 3 || (old && Date.now() - old.lastAttemptAt < 10000)) return;
+        const attempt = {key:old?.key ?? crypto.randomUUID(), expiresAt:card.expiresAt,
+          lastAttemptAt:Date.now(), attempts:(old?.attempts ?? 0) + 1, terminal:false};
+        journal[hash] = attempt;
+        const save = () => { const raw = JSON.stringify(journal); storage.setItem(key,raw); if (storage.getItem(key) !== raw) throw new Error('storage'); };
+        try { save(); } catch { autoState = 'storage-error'; return; }
+        if (!active() || card.expiresAt * 1000 <= Date.now()) return;
+        autoState = 'submitting';
+        // Never call the HTTP checkout/consume endpoint or modify the setting.
+        // The native main process rejects this RPC when permission is disabled.
+        const result = await autoRpc('account/rateLimitResetCredit/consume', {idempotencyKey:attempt.key,creditId:card.id});
+        if (['reset','alreadyRedeemed','nothingToReset','noCredit'].includes(result?.outcome)) {
+          attempt.terminal = true;
+          try { save(); } catch {} // Previously saved key still makes a retry idempotent.
+          autoState = result.outcome;
+        } else autoState = 'unconfirmed';
+        if (active()) refresh();
+      });
+    } catch { autoState = 'unconfirmed-or-not-permitted'; }
+    finally { autoBusy = false; }
+  }
   function validCache(value) {
     if (!record(value) || !numeric(value.observedAt) || value.observedAt > Date.now() || Date.now() - value.observedAt > CACHE_AGE) return null;
     return { observedAt:value.observedAt, cached:true,
@@ -43,6 +145,8 @@
     const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify([email,workspace])));
     if (removed || epoch !== generation) return;
     scope = Array.from(new Uint8Array(hash),b=>b.toString(16).padStart(2,'0')).join('');
+    syncAutoTimer();
+    void maybeAutoReset();
     if (latest) { persist(); publish({...latest,cached:true}); return; }
     try {
       const raw = storage?.getItem(CACHE_KEY);
@@ -125,8 +229,10 @@
     state = cards === null && resets === null ? "unknown" : "ready";
     lastSuccessAt = observedAt;
     latest = { observedAt, resetCards: cards, usageResets: resets };
+    liveCards = rawCards(result);
     persist();
     publish(scope ? {...latest,cached:true} : latest);
+    void maybeAutoReset();
   }
 
   function onMessage(event) {
@@ -138,8 +244,10 @@
       pending = null;
       lastSuccessAt = null;
       generation++;
+      retireAutoRequests(); liveCards = [];
       if (identityPending) clearTimeout(identityPending.timer);
       identityPending = null; scope = null; latest = null;
+      syncAutoTimer();
       try { storage?.removeItem(CACHE_KEY); } catch {}
       publish(null);
       readIdentity();
@@ -148,6 +256,13 @@
     }
     if (data.type !== "mcp-response" || !record(data.message)) return;
     const message = data.message;
+    if (autoRequests.has(message.id)) {
+      const request = autoRequests.get(message.id);
+      clearTimeout(request.timer); autoRequests.delete(message.id);
+      if (message.error) request.reject(new Error('native-rejected'));
+      else request.resolve(message.result);
+      return;
+    }
     if (message.id === identityPending?.id) {
       const request = identityPending;
       clearTimeout(request.timer); identityPending = null;
@@ -188,15 +303,29 @@
   const api = {
     version: "0.1.0",
     refresh,
+    tickAutoReset,
+    setAutoResetEnabled(enabled) {
+      if (typeof enabled !== 'boolean' || !scope || !storage || !crypto.subtle || typeof window.navigator?.locks?.request !== 'function') return false;
+      try {
+        storage.setItem(AUTO_KEY + scope, String(enabled));
+        if (storage.getItem(AUTO_KEY + scope) !== String(enabled)) return false;
+      } catch { return false; }
+      syncAutoTimer();
+      if (enabled) refresh();
+      return true;
+    },
     getStatus() {
-      return { state, removed, pending: pending !== null, lastAttemptAt, lastSuccessAt, cacheEnabled:Boolean(scope), cacheObservedAt:latest?.observedAt ?? null };
+      return { state, removed, pending: pending !== null, lastAttemptAt, lastSuccessAt, cacheEnabled:Boolean(scope), cacheObservedAt:latest?.observedAt ?? null,
+        autoResetEnabled:autoEnabled(), autoResetState:autoState };
     },
     remove() {
       if (removed) return false;
       removed = true;
       generation++;
+      retireAutoRequests(); liveCards = [];
       if (identityPending) clearTimeout(identityPending.timer);
       if (interval !== null) clearInterval(interval);
+      if (autoInterval !== null) clearInterval(autoInterval);
       if (pending !== null) clearTimeout(pending.timer);
       pending = null;
       if (listening) window.removeEventListener("message", onMessage);

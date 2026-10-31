@@ -125,6 +125,9 @@ async function attach() {
               await client.evaluate(`window.__CODEX_METRICS_HUD__.setPosition(${JSON.stringify(options.position)})`);
               if (sharedSnapshots.size) await client.evaluate(`window.__CODEX_METRICS_HUD__.primeSnapshots(${JSON.stringify([...sharedSnapshots.values()])})`);
             }
+            // Drive expiry checks from the collector too, so background-window
+            // timer throttling does not require focus to reach the last minute.
+            await client.evaluate('window.__CODEX_METRICS_ACCOUNT__?.tickAutoReset?.()');
             const id = await client.evaluate('window.__CODEX_METRICS_HUD__.getThreadId()');
             if (id) {
               const data = await snapshot(id,client,sharedSnapshots.get(id)?.snapshot);
