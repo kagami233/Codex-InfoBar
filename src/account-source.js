@@ -127,6 +127,8 @@
   function validCache(value) {
     if (!record(value) || !numeric(value.observedAt) || value.observedAt > Date.now() || Date.now() - value.observedAt > CACHE_AGE) return null;
     return { observedAt:value.observedAt, cached:true,
+      resetCardCount:Number.isSafeInteger(value.resetCardCount) && value.resetCardCount >= 0 ? value.resetCardCount : null,
+      resetCardExpiries:Array.isArray(value.resetCardExpiries) ? value.resetCardExpiries.slice(0,1000).filter(seconds) : [],
       resetCards:Array.isArray(value.resetCards) ? value.resetCards.slice(0,100).filter(c=>seconds(c?.expiresAt)).map(c=>({expiresAt:c.expiresAt})) : null,
       usageResets:Array.isArray(value.usageResets) ? value.usageResets.slice(0,20).filter(w=>record(w)&&seconds(w.resetsAt)).map(w=>({
         limitId:typeof w.limitId==='string'?w.limitId.slice(0,100):null, limitName:typeof w.limitName==='string'?w.limitName.slice(0,100):null,
@@ -179,6 +181,20 @@
       seconds(credit.expiresAt)).map(credit => credit.expiresAt))]
       .sort((a, b) => a - b).map(expiresAt => ({ expiresAt }));
   }
+  function resetCardInventory(result) {
+    const details = result.rateLimitResetCredits;
+    if (!record(details)) return {resetCardCount:null,resetCardExpiries:[]};
+    const raw = details.availableCount;
+    const count = typeof raw === 'bigint' || (typeof raw === 'string' && /^\d+$/.test(raw)) ? Number(raw) : raw;
+    const seen = new Set();
+    const cards = Array.isArray(details.credits) ? details.credits.filter(c => {
+      if (!record(c) || c.status !== 'available' || c.resetType !== 'codexRateLimits' || !(c.expiresAt === null || seconds(c.expiresAt))) return false;
+      if (typeof c.id === 'string' && c.id) {if (seen.has(c.id)) return false; seen.add(c.id);}
+      return true;
+    }) : null;
+    return {resetCardCount:Number.isSafeInteger(count) && count >= 0 ? count : cards?.length ?? null,
+      resetCardExpiries:cards?.filter(c => seconds(c.expiresAt)).slice(0,1000).map(c => c.expiresAt) ?? []};
+  }
 
   function bucketWindows(bucket, observedAt, mapId = null) {
     const id = field(bucket, "limit_id", "limitId");
@@ -226,9 +242,10 @@
     const observedAt = Date.now();
     const cards = resetCards(result);
     const resets = usageResets(result, new Date(observedAt).toISOString());
-    state = cards === null && resets === null ? "unknown" : "ready";
+    const inventory = resetCardInventory(result);
+    state = cards === null && resets === null && inventory.resetCardCount === null ? "unknown" : "ready";
     lastSuccessAt = observedAt;
-    latest = { observedAt, resetCards: cards, usageResets: resets };
+    latest = { observedAt, resetCards: cards, usageResets: resets, ...inventory };
     liveCards = rawCards(result);
     persist();
     publish(scope ? {...latest,cached:true} : latest);

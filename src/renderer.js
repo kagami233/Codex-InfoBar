@@ -22,6 +22,18 @@
   const host = document.createElement("div");
   host.id = HOST_ID;
   host.setAttribute("data-codex-metrics-hud", "true");
+  host.setAttribute('data-position', position);
+  // The native single-line surface normally keeps a pill radius until its own
+  // footer becomes stacked. Our extra row must participate in that decision.
+  // Keep this scoped light-DOM stylesheet owned by the host for exact cleanup.
+  const layoutStyle = document.createElement('style');
+  layoutStyle.textContent = `
+    [data-composer-layout="single-line"]:has(> [data-composer-body] > #${HOST_ID}[data-position="inside"]) {
+      --composer-surface-border-radius:var(--composer-border-radius, 24px);
+      border-radius:var(--composer-border-radius, 24px) !important;
+    }
+  `;
+  host.appendChild(layoutStyle);
   const shadow = host.attachShadow({ mode: "open" });
   const style = document.createElement("style");
   style.textContent = `
@@ -186,6 +198,13 @@
       Number.isSafeInteger(value) && value * 1000 > Date.now() && value < window.resetsAt).sort((a, b) => a - b)[0];
     return { at: expiresAt ?? window.resetsAt, card: expiresAt !== undefined };
   }
+  function resetCardCount() {
+    if (!freshAccount() || !Number.isSafeInteger(accountSnapshot.resetCardCount) || accountSnapshot.resetCardCount < 0) return null;
+    // Keep repeated expiries: two cards can expire at exactly the same second.
+    const expired = (Array.isArray(accountSnapshot.resetCardExpiries) ? accountSnapshot.resetCardExpiries : [])
+      .filter(at => Number.isSafeInteger(at) && at > 0 && at * 1000 <= Date.now()).length;
+    return Math.max(0, accountSnapshot.resetCardCount - expired);
+  }
   function resetCountdown(resetsAt) {
     const milliseconds = resetsAt * 1000 - Date.now();
     if (milliseconds <= 0) return "等待更新";
@@ -246,6 +265,7 @@
     compact: ["M12 2v6m-3-3 3 3 3-3", "M12 22v-6m-3 3 3-3 3 3", "M5 12h14"],
     context: ["m12 3-9 5 9 5 9-5-9-5Z", "m3 12 9 5 9-5", "m3 16 9 5 9-5"],
     budget: ["M4 3v6l4-3-4-3Z", "M20 3v6l-4-3 4-3Z", "M4 15v6l4-3-4-3Z", "M20 15v6l-4-3 4-3Z", "M9 12h6"],
+    cards: ["M7 3h12a2 2 0 0 1 2 2v12", "M5 7h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2Z", "M7 12h6M7 16h3"],
   };
   function metric(iconName, label, value, tooltip, remainingPercent = null, card = false) {
     const item = document.createElement("span");
@@ -312,7 +332,7 @@
     bar.appendChild(item);
   }
   function render(stale, cached = false) {
-    const view = JSON.stringify([snapshot, stale, cached, freshAccount() ? accountSnapshot : null, resetDisplay()]);
+    const view = JSON.stringify([snapshot, stale, cached, freshAccount() ? accountSnapshot : null, resetDisplay(), resetCardCount()]);
     if (view === lastView) return;
     lastView = view;
     bar.replaceChildren();
@@ -333,6 +353,8 @@
     const estimated = reference?.kind === 'calibrated-compaction-estimate' && numeric(reference.remainingPercent);
     metric('budget', '剩余压缩余量', estimated ? `≈${Math.floor(reference.remainingPercent)}%` : '—', '按配置、近期压缩记录及请求增长余量校准的估计。');
     resetMetric(stale);
+    const cards = resetCardCount();
+    metric('cards', '可用重置卡', cards === null ? '—' : `${cards}张`, '当前账户尚未过期的可用 Codex 重置卡数量。');
   }
 
   function refresh() {
@@ -364,6 +386,11 @@
       mounted = false;
       return;
     }
+    // Native Tailwind's light-DOM reset outranks normal :host declarations.
+    // Set only our own host's box here so the inset survives the app cascade.
+    host.style.margin = position === 'inside' ? '0 12px 8px' : '6px 0';
+    host.style.maxWidth = position === 'inside' ? 'calc(100% - 24px)' : '100%';
+    host.style.alignSelf = 'stretch';
     if (position === "inside") {
       if (host.parentElement !== composer) composer.appendChild(host);
     } else if (position === "below") {
@@ -428,6 +455,7 @@
     setPosition(value) {
       if (!["above", "inside", "below"].includes(value)) return false;
       position = value;
+      host.setAttribute('data-position', position);
       refresh();
       return true;
     },

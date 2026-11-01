@@ -38,6 +38,8 @@ async function previewAccountSnapshot() {
     return {
       observedAt: value.observedAt,
       resetCards: Array.isArray(value.resetCards) ? value.resetCards.map(card => ({ expiresAt: card?.expiresAt })) : null,
+      resetCardCount:Number.isSafeInteger(value.resetCardCount) && value.resetCardCount >= 0 ? value.resetCardCount : null,
+      resetCardExpiries:Array.isArray(value.resetCardExpiries) ? value.resetCardExpiries.filter(at => Number.isSafeInteger(at) && at > 0).slice(0,1000) : [],
       usageResets: Array.isArray(value.usageResets) ? value.usageResets.map(window => Object.fromEntries(
         ['limitId','limitName','window','windowMinutes','usedPercent','resetsAt','observedAt'].map(key => [key, window?.[key]]))) : null,
     };

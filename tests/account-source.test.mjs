@@ -224,6 +224,7 @@ test("normalizes only usable card expiries and safe window telemetry without acc
   });
   assert.deepEqual(env.last, {
     observedAt: START, resetCards: [{ expiresAt: EXPIRY }, { expiresAt: EXPIRY + 60 }],
+    resetCardCount:100,resetCardExpiries:[EXPIRY,EXPIRY,EXPIRY+60],
     usageResets: [{ limitId: "codex", limitName: null, window: "primary", windowMinutes: 10080,
       usedPercent: 62, resetsAt: 1793774140, observedAt: new Date(START).toISOString() }],
   });
@@ -240,14 +241,29 @@ test("missing card details stay unknown while empty arrays explicitly clear card
     env.api.refresh();
   }
   env.respond({ rateLimitsByLimitId: {}, rateLimits: quota, rateLimitResetCredits: { credits: [] } });
-  assert.deepEqual(env.last, { observedAt: START, resetCards: [], usageResets: [] });
+  assert.deepEqual(env.last, { observedAt: START, resetCards: [], usageResets: [], resetCardCount:0, resetCardExpiries:[] });
   env.api.refresh();
   env.respond({});
-  assert.deepEqual(env.last, { observedAt: START, resetCards: null, usageResets: null });
+  assert.deepEqual(env.last, { observedAt: START, resetCards: null, usageResets: null, resetCardCount:null, resetCardExpiries:[] });
   assert.equal(env.api.getStatus().state, "unknown");
   env.api.refresh();
   env.respond({ rateLimits: null });
   assert.deepEqual(env.last.usageResets, []);
+});
+
+test('card count uses the full summary even when details are capped, and keeps identical expiries per card', () => {
+  const env=environment();
+  env.respond({rateLimitResetCredits:{availableCount:'12',credits:[
+    card({id:'a'}),card({id:'b'}),card({id:'a'}),card({id:'forever',expiresAt:null}),
+  ]}});
+  assert.equal(env.last.resetCardCount,12);
+  assert.deepEqual(env.last.resetCardExpiries,[EXPIRY,EXPIRY]);
+  assert.deepEqual(env.last.resetCards,[{expiresAt:EXPIRY}]);
+  env.api.refresh();env.respond({rateLimitResetCredits:{availableCount:8,credits:null}});
+  assert.equal(env.last.resetCardCount,8);assert.equal(env.last.resetCards,null);
+  env.api.refresh();env.respond({rateLimitResetCredits:{credits:[card({id:'a'}),card({id:'b'}),card({id:'c',expiresAt:null})]}});
+  assert.equal(env.last.resetCardCount,3);
+  assert.doesNotMatch(JSON.stringify(env.last),/"id"|forever/);
 });
 
 test("response correlation, failures and timeouts prevent stale cards from surviving", async () => {
@@ -356,6 +372,8 @@ test('account cache survives reinjection, is scoped to verified workspace, and c
   assert.equal(second.last.cached,true);
   assert.equal(second.last.observedAt,START);
   assert.equal(second.last.usageResets[0].usedPercent,62);
+  assert.equal(second.last.resetCardCount,1);
+  assert.deepEqual(second.last.resetCardExpiries,[EXPIRY]);
   second.tick(10000);
   assert.equal(second.last.cached,true,'timeout retains verified cache');
   second.notify('account/updated');
