@@ -8,6 +8,7 @@ import {WatchPolicy} from './watch-policy.mjs';
 import {selectDebugPort} from './debug-port.mjs';
 import {watcherOwner} from './service-state.mjs';
 import {syncWindowsShortcuts} from './windows-shortcuts.mjs';
+import {ensureWindowsLauncher} from './windows-launcher.mjs';
 import {resolveApp,mainPid,mainProcess,requestedDebugPort,listeners,processes,requestQuit,launch,stateRoot,port,fixedPort,setDebugPort,powershell} from './platform.mjs';
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 async function main(){
@@ -39,7 +40,7 @@ try{
  let app=await resolveApp(),initial=await mainPid(app);
  if(process.argv.includes('--launch')&&!initial){await launch(app,port);for(let i=0;i<30&&!stopped;i++){initial=await mainPid(app);if(initial)break;await sleep(1000);}}
  const policy=new WatchPolicy(initial);let previous='';
- let shortcutIdentity='';
+ let shortcutIdentity='',shortcutAttemptIdentity='',nextShortcutCheck=0;
  await log(`Watcher ${process.pid} ready; existing process ${initial??'none'} protected. Port ${port}.`);
  function attach(){
   if(collector)return;
@@ -59,11 +60,13 @@ try{
     const next=await selectDebugPort({preferred:port,fixed:false,listeners,verify:verifyEndpointOwner});
     if(next!==port){const prior=port;await setDebugPort(next);await log(`Port ${prior} has an unverified/stale listener; using unused loopback port ${port}. No listener was stopped.`);occupied=false;}
    }
-   if(process.platform==='win32'&&shortcutIdentity!==`${app.executable}:${port}`){
-    try{const links=await syncWindowsShortcuts({app,port,stateRoot,run:powershell});
-     await log(`Shortcut launch parameters ready; updated ${links.updated.length}, custom/edited links skipped ${links.skipped.length}.`);
+   if(process.platform==='win32'&&(shortcutAttemptIdentity!==`${app.executable}:${port}`||Date.now()>=nextShortcutCheck)){
+    try{const launcher=await ensureWindowsLauncher({app,stateRoot,run:powershell});
+     const links=await syncWindowsShortcuts({app,port,stateRoot,run:powershell,launchTarget:launcher.executable,iconLocation:launcher.icon+',0'});
+     if(shortcutIdentity!==`${app.executable}:${port}`||links.updated.length)await log(`Shortcut launch parameters ready; updated ${links.updated.length}, custom/edited links skipped ${links.skipped.length}.`);
+     shortcutIdentity=`${app.executable}:${port}`;
     }catch(error){await log(`Shortcut update failed; collector remains available: ${error.message}`);}
-    shortcutIdentity=`${app.executable}:${port}`;
+    shortcutAttemptIdentity=`${app.executable}:${port}`;nextShortcutCheck=Date.now()+30000;
    }
    const action=policy.decide({pid,ready,occupied,debugRequested,autoRestart:process.platform!=='win32'});
    if(action!==previous){await log(`State: ${action}; pid=${pid??'none'}; debugRequested=${debugRequested}`);previous=action;}

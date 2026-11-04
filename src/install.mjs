@@ -11,6 +11,7 @@ import {selectDebugPort} from './debug-port.mjs';
 import {verifyEndpointOwner} from './cdp.mjs';
 import {windowsSessionFlag,windowsEnvironment,runWindowsSession} from './windows-session.mjs';
 import {syncWindowsShortcuts,restoreWindowsShortcuts} from './windows-shortcuts.mjs';
+import {ensureWindowsLauncher} from './windows-launcher.mjs';
 if(process.platform==='win32'&&!process.argv.includes(windowsSessionFlag)){
  process.exitCode=await runWindowsSession(import.meta.url,process.argv.slice(2),{run:powershell});
 }else{
@@ -55,7 +56,8 @@ if(process.platform==='darwin'){
  await fs.writeFile(plist,`<?xml version="1.0"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>${label}</string><key>ProgramArguments</key><array><string>${xml(process.execPath)}</string><string>${xml(script)}</string></array><key>EnvironmentVariables</key><dict><key>CODEX_INFOBAR_STATE</key><string>${xml(stateRoot)}</string></dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>30</integer><key>StandardOutPath</key><string>${xml(path.join(stateRoot,'service.log'))}</string><key>StandardErrorPath</key><string>${xml(path.join(stateRoot,'service-error.log'))}</string></dict></plist>`,{mode:0o600});
  await run('/usr/bin/plutil',['-lint',plist]);await run('/bin/launchctl',['bootstrap',`gui/${process.getuid()}`,plist]);
 }else{
- const links=await syncWindowsShortcuts({app:await resolveApp(),port:selectedPort,stateRoot,run:powershell});
+ const app=await resolveApp(),launcher=await ensureWindowsLauncher({app,stateRoot,run:powershell});
+ const links=await syncWindowsShortcuts({app,port:selectedPort,stateRoot,run:powershell,launchTarget:launcher.executable,iconLocation:launcher.icon+',0'});
  console.log(`Windows launch shortcuts updated: ${JSON.stringify(links.updated)}; custom/edited links skipped: ${JSON.stringify(links.skipped)}.`);
  console.log(`Taskbar launch target ready: ${links.launcher}`);
  await fs.mkdir(path.dirname(startup),{recursive:true});
@@ -74,6 +76,6 @@ if(process.platform==='darwin'){
  }
  if(!ready)throw new Error(`Startup entry was written, but watcher ${pid} did not become ready. See ${path.join(stateRoot,'watcher-error.log')} and run npm run doctor. Installation is incomplete.`);
 }
-console.log(process.platform==='win32'?'Codex-InfoBar installed. Existing Codex is protected. Updated Windows shortcuts launch with debugging directly. A Store taskbar pin must be replaced with the updated shortcut once; the watcher never closes Windows Codex to enable debugging. Logs: '+stateRoot:'Codex-InfoBar installed. Existing Codex is protected. Quit when work is saved, then click the original Codex icon and wait ~15–30 seconds. Logs: '+stateRoot);
+console.log(process.platform==='win32'?'Codex-InfoBar installed. Existing Codex is protected. Managed Windows shortcuts use a stable launcher that resolves the current registered app on each click. A virtual Store pin still needs one-time migration; existing managed links keep their identity and position. Logs: '+stateRoot:'Codex-InfoBar installed. Existing Codex is protected. Quit when work is saved, then click the original Codex icon and wait ~15–30 seconds. Logs: '+stateRoot);
 }
 }
