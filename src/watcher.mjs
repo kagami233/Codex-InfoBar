@@ -8,6 +8,9 @@ import {WatchPolicy} from './watch-policy.mjs';
 import {selectDebugPort} from './debug-port.mjs';
 import {watcherOwner} from './service-state.mjs';
 import {syncWindowsShortcuts} from './windows-shortcuts.mjs';
+import {ensureWindowsLauncher,windowsLauncherPaths} from './windows-launcher.mjs';
+import {syncWindowsShell} from './windows-shell.mjs';
+import {syncWindowsStartupTask} from './windows-startup.mjs';
 import {resolveApp,mainPid,mainProcess,requestedDebugPort,listeners,processes,requestQuit,launch,stateRoot,port,fixedPort,setDebugPort,powershell} from './platform.mjs';
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 async function main(){
@@ -39,7 +42,8 @@ try{
  let app=await resolveApp(),initial=await mainPid(app);
  if(process.argv.includes('--launch')&&!initial){await launch(app,port);for(let i=0;i<30&&!stopped;i++){initial=await mainPid(app);if(initial)break;await sleep(1000);}}
  const policy=new WatchPolicy(initial);let previous='';
- let shortcutIdentity='';
+ let shortcutIdentity='',shortcutAttemptIdentity='',nextShortcutCheck=0;
+ let nextShellCheck=0,shellPid=null,lastObservedPid;
  await log(`Watcher ${process.pid} ready; existing process ${initial??'none'} protected. Port ${port}.`);
  function attach(){
   if(collector)return;
@@ -53,17 +57,32 @@ try{
   try{
    app=await resolveApp();const processRecord=await mainProcess(app);pid=processRecord?.pid??null;let ready=false;
    const debugRequested=Boolean(requestedDebugPort(processRecord?.args));
+   if(pid!==lastObservedPid){
+    let parent=null;if(pid)parent=(await processes()).find(row=>row.pid===processRecord.parent);
+    await log(`Client observed: pid=${pid??'none'}; parentPid=${processRecord?.parent??'none'}; parentExecutable=${parent?.command??'unavailable'}; executable=${app.executable}; debugRequested=${debugRequested}.`);
+    lastObservedPid=pid;
+   }
    try{await verifyEndpointOwner(port);ready=true;}catch{}
    let occupied=(await listeners(port)).length>0;
    if(process.platform==='win32'&&occupied&&!ready&&!fixedPort&&!debugRequested){
     const next=await selectDebugPort({preferred:port,fixed:false,listeners,verify:verifyEndpointOwner});
     if(next!==port){const prior=port;await setDebugPort(next);await log(`Port ${prior} has an unverified/stale listener; using unused loopback port ${port}. No listener was stopped.`);occupied=false;}
    }
-   if(process.platform==='win32'&&shortcutIdentity!==`${app.executable}:${port}`){
-    try{const links=await syncWindowsShortcuts({app,port,stateRoot,run:powershell});
-     await log(`Shortcut launch parameters ready; updated ${links.updated.length}, custom/edited links skipped ${links.skipped.length}.`);
+   if(process.platform==='win32'&&(shortcutAttemptIdentity!==`${app.executable}:${port}`||Date.now()>=nextShortcutCheck)){
+    try{const launcher=await ensureWindowsLauncher({app,stateRoot,run:powershell});
+     const links=await syncWindowsShortcuts({app,port,stateRoot,run:powershell,launchTarget:launcher.executable,iconLocation:launcher.icon+',0'});
+     if(shortcutIdentity!==`${app.executable}:${port}`||links.updated.length)await log(`Shortcut launch parameters ready; updated ${links.updated.length}, custom/edited links skipped ${links.skipped.length}.`);
+     shortcutIdentity=`${app.executable}:${port}`;
+     const startupRoute=await syncWindowsStartupTask({app,stateRoot,run:powershell,onlyIfManaged:true});
+     if(startupRoute.updated)await log(`Official direct login task disabled; managed login mode=${startupRoute.mode}.`);
     }catch(error){await log(`Shortcut update failed; collector remains available: ${error.message}`);}
-    shortcutIdentity=`${app.executable}:${port}`;
+    shortcutAttemptIdentity=`${app.executable}:${port}`;nextShortcutCheck=Date.now()+30000;
+   }
+   if(process.platform==='win32'&&pid&&(pid!==shellPid||Date.now()>=nextShellCheck)){
+    try{const launcher=windowsLauncherPaths(stateRoot);await fs.access(launcher.executable);const route=await syncWindowsShell({pid,app,stateRoot,run:powershell,launcher});
+     if(route.updated)await log(`Taskbar window route repaired: ${route.updated}; pid=${pid}.`);
+    }catch(error){await log(`Taskbar window route check failed: ${error.message}`);}
+    shellPid=pid;nextShellCheck=Date.now()+10000;
    }
    const action=policy.decide({pid,ready,occupied,debugRequested,autoRestart:process.platform!=='win32'});
    if(action!==previous){await log(`State: ${action}; pid=${pid??'none'}; debugRequested=${debugRequested}`);previous=action;}

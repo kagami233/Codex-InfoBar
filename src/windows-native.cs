@@ -26,7 +26,8 @@ namespace CodexInfoBar {
         [DllImport("rstrtmgr.dll")] static extern int RmShutdown(uint session, uint flags, IntPtr callback);
         [DllImport("rstrtmgr.dll")] static extern int RmEndSession(uint session);
 
-        public static int Request(uint pid, string expectedExecutable) {
+        public static int Request(uint pid, string expectedExecutable) { return Request(pid, expectedExecutable, 0); }
+        public static int Request(uint pid, string expectedExecutable, long expectedCreated) {
             // Query rights only: this code never opens a process with termination rights.
             IntPtr handle = OpenProcess(0x1000, false, pid);
             if (handle == IntPtr.Zero) {
@@ -40,6 +41,8 @@ namespace CodexInfoBar {
                 if (!String.Equals(image.ToString(), expectedExecutable, StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("Process identity changed; refusing shutdown");
                 System.Runtime.InteropServices.ComTypes.FILETIME created, exited, kernel, user;
                 if (!GetProcessTimes(handle, out created, out exited, out kernel, out user)) throw new Win32Exception(Marshal.GetLastWin32Error());
+                long actualCreated = ((long)created.dwHighDateTime << 32) | (uint)created.dwLowDateTime;
+                if (expectedCreated != 0 && actualCreated != expectedCreated) throw new InvalidOperationException("Process creation time changed; refusing shutdown");
                 var target = new UniqueProcess { pid = pid, started = created };
                 uint session; int result = RmStartSession(out session, 0, new StringBuilder(33));
                 if (result != 0) throw new Win32Exception(result);

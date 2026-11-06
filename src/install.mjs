@@ -4,13 +4,16 @@ import os from 'node:os';
 import {fileURLToPath} from 'node:url';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
-import {stateRoot,resolveApp,processes,powershell,port,fixedPort,listeners} from './platform.mjs';
+import {stateRoot,resolveApp,mainPid,processes,powershell,port,fixedPort,listeners} from './platform.mjs';
 import {startWindowsDetached,retireWindowsWatcher} from './windows-native.mjs';
 import {stopWatcher,inspectWatcher} from './service-state.mjs';
 import {selectDebugPort} from './debug-port.mjs';
 import {verifyEndpointOwner} from './cdp.mjs';
 import {windowsSessionFlag,windowsEnvironment,runWindowsSession} from './windows-session.mjs';
 import {syncWindowsShortcuts,restoreWindowsShortcuts} from './windows-shortcuts.mjs';
+import {ensureWindowsLauncher} from './windows-launcher.mjs';
+import {syncWindowsShell} from './windows-shell.mjs';
+import {inspectWindowsStartupTask,windowsLoginMode,windowsStartupCommand,syncWindowsStartupTask,restoreWindowsStartupTask} from './windows-startup.mjs';
 if(process.platform==='win32'&&!process.argv.includes(windowsSessionFlag)){
  process.exitCode=await runWindowsSession(import.meta.url,process.argv.slice(2),{run:powershell});
 }else{
@@ -38,7 +41,7 @@ async function stop(){
 }
 if(!remove)await resolveApp();
 await stop();
-if(remove){if(process.platform==='win32')await restoreWindowsShortcuts({stateRoot,run:powershell});await fs.rm(process.platform==='win32'?startup:plist,{force:true});console.log('Startup service removed. Runtime/logs/cache retained at '+stateRoot);}
+if(remove){if(process.platform==='win32'){let app;try{app=await resolveApp();}catch{}await syncWindowsShell({app,pid:app?await mainPid(app):null,stateRoot,run:powershell,restore:true});await restoreWindowsShortcuts({stateRoot,run:powershell});console.log('Official startup restore:',JSON.stringify(await restoreWindowsStartupTask({stateRoot,run:powershell})));}await fs.rm(process.platform==='win32'?startup:plist,{force:true});console.log('Startup service removed. Runtime/logs/cache retained at '+stateRoot);}
 else{
 await fs.mkdir(runtime,{recursive:true,mode:0o700});
 await fs.cp(path.join(source,'src'),path.join(runtime,'src'),{recursive:true});
@@ -55,14 +58,21 @@ if(process.platform==='darwin'){
  await fs.writeFile(plist,`<?xml version="1.0"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>${label}</string><key>ProgramArguments</key><array><string>${xml(process.execPath)}</string><string>${xml(script)}</string></array><key>EnvironmentVariables</key><dict><key>CODEX_INFOBAR_STATE</key><string>${xml(stateRoot)}</string></dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>30</integer><key>StandardOutPath</key><string>${xml(path.join(stateRoot,'service.log'))}</string><key>StandardErrorPath</key><string>${xml(path.join(stateRoot,'service-error.log'))}</string></dict></plist>`,{mode:0o600});
  await run('/usr/bin/plutil',['-lint',plist]);await run('/bin/launchctl',['bootstrap',`gui/${process.getuid()}`,plist]);
 }else{
- const links=await syncWindowsShortcuts({app:await resolveApp(),port:selectedPort,stateRoot,run:powershell});
+ const app=await resolveApp(),launcher=await ensureWindowsLauncher({app,stateRoot,run:powershell});
+ const task=await inspectWindowsStartupTask({app,run:powershell});
+ if(task&&(task.state===3||task.state===4))throw new Error('Official Codex login startup is policy-controlled; no policy was changed');
+ const requested=process.argv.find(arg=>arg.startsWith('--windows-login='))?.slice('--windows-login='.length);
+ const mode=windowsLoginMode({requested,prior:priorSettings.windowsLoginMode,task});
+ config.windowsLoginMode=mode;await fs.writeFile(path.join(stateRoot,'settings.json'),JSON.stringify(config,null,2),{mode:0o600});
+ const links=await syncWindowsShortcuts({app,port:selectedPort,stateRoot,run:powershell,launchTarget:launcher.executable,iconLocation:launcher.icon+',0'});
  console.log(`Windows launch shortcuts updated: ${JSON.stringify(links.updated)}; custom/edited links skipped: ${JSON.stringify(links.skipped)}.`);
  console.log(`Taskbar launch target ready: ${links.launcher}`);
  await fs.mkdir(path.dirname(startup),{recursive:true});
  const quote=s=>'"'+s.replaceAll('"','""')+'"';
- const command=`"${process.execPath}" "${script}"`;
+ const command=windowsStartupCommand({mode,launcher:launcher.executable,node:process.execPath,watcher:script});
  const vbs=`Set shell = CreateObject("WScript.Shell")\r\nshell.Environment("PROCESS")("CODEX_INFOBAR_STATE") = ${quote(stateRoot)}\r\nshell.Run ${quote(command)}, 0, False\r\n`;
  await fs.writeFile(startup,Buffer.concat([Buffer.from([0xff,0xfe]),Buffer.from(vbs,'utf16le')]));
+ console.log('Windows login routing:',JSON.stringify(await syncWindowsStartupTask({app,stateRoot,run:powershell,mode})));
  const environment=windowsEnvironment({CODEX_INFOBAR_STATE:stateRoot});
  const pid=await startWindowsDetached(process.execPath,[script],{cwd:runtime,env:environment,run:powershell});
  const deadline=Date.now()+30000;let ready=false;
@@ -74,6 +84,6 @@ if(process.platform==='darwin'){
  }
  if(!ready)throw new Error(`Startup entry was written, but watcher ${pid} did not become ready. See ${path.join(stateRoot,'watcher-error.log')} and run npm run doctor. Installation is incomplete.`);
 }
-console.log(process.platform==='win32'?'Codex-InfoBar installed. Existing Codex is protected. Updated Windows shortcuts launch with debugging directly. A Store taskbar pin must be replaced with the updated shortcut once; the watcher never closes Windows Codex to enable debugging. Logs: '+stateRoot:'Codex-InfoBar installed. Existing Codex is protected. Quit when work is saved, then click the original Codex icon and wait ~15–30 seconds. Logs: '+stateRoot);
+console.log(process.platform==='win32'?'Codex-InfoBar installed. Existing Codex is protected. Managed Windows shortcuts use a stable launcher that resolves the current registered app on each click. A virtual Store pin still needs one-time migration; existing managed links retain their visible names and file locations. Logs: '+stateRoot:'Codex-InfoBar installed. Existing Codex is protected. Quit when work is saved, then click the original Codex icon and wait ~15–30 seconds. Logs: '+stateRoot);
 }
 }
