@@ -1,18 +1,21 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
+import {fileURLToPath} from 'node:url';
 import {psLiteral} from './windows-native.mjs';
+export const windowsLauncherPaths=stateRoot=>({executable:path.join(stateRoot,'launcher','CodexInfoBarLauncher.exe'),icon:path.join(stateRoot,'launcher','ChatGPT.ico')});
 
 export async function ensureWindowsLauncher({stateRoot,app,run}){
  const directory=path.join(stateRoot,'launcher');await fs.mkdir(directory,{recursive:true});
- const executable=path.join(directory,'ChatGPT.exe'),icon=path.join(directory,'ChatGPT.ico');
- const source=await fs.readFile(new URL('./windows-launcher.cs',import.meta.url),'utf8');
+ const {executable,icon}=windowsLauncherPaths(stateRoot);
+ const sources=['windows-launcher.cs','windows-native.cs','windows-shell.cs','windows-window-bootstrap.cs'].map(name=>fileURLToPath(new URL(name,import.meta.url)));
+ const source=(await Promise.all(sources.map(file=>fs.readFile(file,'utf8')))).join('\n');
  const digest=createHash('sha256').update(source).digest('hex'),revision=path.join(directory,'source.sha256');
  let installed;try{installed=await fs.readFile(revision,'utf8');await fs.access(executable);}catch{installed=null;}
  if(installed!==digest){
-  const temporary=path.join(directory,`ChatGPT.${process.pid}.new.exe`);
+  const temporary=path.join(directory,`CodexInfoBarLauncher.${process.pid}.new.exe`);
   try{
-   await run(`Add-Type -TypeDefinition ${psLiteral(source)} -ReferencedAssemblies System.Runtime.Serialization,System.Management,System.Windows.Forms,System.Xml -OutputAssembly ${psLiteral(temporary)} -OutputType WindowsApplication`,{timeout:60000});
+   await run(`Add-Type -LiteralPath @(${sources.map(psLiteral).join(',')}) -ReferencedAssemblies System.Runtime.Serialization,System.Management,System.Windows.Forms,System.Xml -OutputAssembly ${psLiteral(temporary)} -OutputType WindowsApplication`,{timeout:60000});
    await fs.rename(temporary,executable);await fs.writeFile(revision,digest);
   }finally{await fs.rm(temporary,{force:true});}
  }

@@ -1,0 +1,21 @@
+import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs/promises';import path from 'node:path';import os from 'node:os';import {spawn} from 'node:child_process';
+import {powershell,psLiteral} from '../src/platform.mjs';import {ensureWindowsLauncher} from '../src/windows-launcher.mjs';import {syncWindowsShell,managedShellAppId} from '../src/windows-shell.mjs';
+
+test('native startup window routing applies before the slow watcher and preserves originals for uninstall',{skip:process.platform!=='win32',timeout:60000},async t=>{
+ const root=await fs.realpath(os.tmpdir()),directory=await fs.mkdtemp(path.join(root,'infobar bootstrap '));let child,observer;
+ t.after(async()=>{for(const process of [observer,child])if(process?.exitCode===null&&process.signalCode===null){process.kill();await new Promise(resolve=>process.once('exit',resolve));}if(!path.resolve(directory).startsWith(root+path.sep))throw new Error('Unsafe fixture cleanup');await fs.rm(directory,{recursive:true,force:true,maxRetries:5,retryDelay:100});});
+ const stateRoot=path.join(directory,'state'),launcher=await ensureWindowsLauncher({stateRoot,app:{executable:process.execPath},run:powershell});
+ const executable=path.join(directory,'window fixture.exe'),log=path.join(directory,'window.log'),armed=path.join(directory,'armed'),done=path.join(directory,'routed'),stop=path.join(directory,'stop');
+ await powershell(`Add-Type -TypeDefinition ${psLiteral(await fs.readFile(new URL('./fixtures/tray-app.cs',import.meta.url),'utf8'))} -ReferencedAssemblies System.Windows.Forms,System.Drawing -OutputAssembly ${psLiteral(executable)} -OutputType WindowsApplication`);
+ const script=`$ErrorActionPreference='Stop';[Reflection.Assembly]::LoadFile(${psLiteral(launcher.executable)})|Out-Null;$observer=New-Object CodexInfoBar.WindowsWindowBootstrap(${psLiteral(executable)},${psLiteral(stateRoot)},${psLiteral(launcher.executable)},${psLiteral(launcher.icon)});try{[IO.File]::WriteAllText(${psLiteral(armed)},'ready');$ok=$observer.WaitForFirstRoute(10000);[IO.File]::WriteAllText(${psLiteral(done)},([string]$ok));$deadline=[DateTime]::UtcNow.AddSeconds(15);while(!(Test-Path -LiteralPath ${psLiteral(stop)}) -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 50}}finally{$observer.Dispose()}`;
+ observer=spawn('powershell.exe',['-NoProfile','-NonInteractive','-EncodedCommand',Buffer.from(script,'utf16le').toString('base64')],{windowsHide:true,stdio:'ignore'});
+ const wait=async(file,timeout=10000)=>{const deadline=Date.now()+timeout;while(Date.now()<deadline){try{if((await fs.stat(file)).size>0)return;}catch{}await new Promise(resolve=>setTimeout(resolve,25));}throw new Error('Native window fixture timed out: '+path.basename(file));};
+ await wait(armed);const start=Date.now();child=spawn(executable,[log],{windowsHide:true,stdio:'ignore'});await wait(done);
+ assert.equal(await fs.readFile(done,'utf8'),'True');assert.ok(Date.now()-start<5000,'routing must not wait for the ten-second background poll');
+ await fs.writeFile(stop,'stop');if(observer.exitCode===null)await new Promise(resolve=>observer.once('exit',resolve));assert.equal(observer.exitCode,0);
+ const options={pid:child.pid,app:{executable},stateRoot,launcher,run:powershell};
+ const synced=await syncWindowsShell(options);assert.equal(synced.updated,0,'the native launcher has already set the correct identity');
+ const saved=JSON.parse(await fs.readFile(path.join(stateRoot,'shell-windows.json'),'utf8'));assert.equal(saved.entries[0].original.appId,null,'the watcher must import the actual original, not its already-managed value');assert.equal(saved.entries[0].applied.appId,managedShellAppId);assert.ok(saved.entries[0].AppliedAt);
+ t.diagnostic(JSON.stringify({event:saved.entries[0].Source,visibleWhenCaptured:saved.entries[0].VisibleWhenCaptured,propertyWriteMs:Date.parse(saved.entries[0].AppliedAt)-Date.parse(saved.entries[0].CapturedAt)}));
+ assert.equal((await syncWindowsShell({...options,restore:true})).updated,1);assert.equal(JSON.parse(await fs.readFile(path.join(stateRoot,'shell-windows.json'),'utf8')).entries.length,0);assert.equal(child.exitCode,null,'routing and restoration must not close the app');
+});

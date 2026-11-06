@@ -25,7 +25,7 @@ export function validSocket(raw, port) {
 export async function verifyEndpointOwner(port) {
   const app=await resolveApp();
   const sockets=await listeners(port);
-  if(!sockets.length)throw new Error(process.platform==='win32'?`Debug port ${port} is closed. Launch the updated user shortcut. A Store taskbar pin must be replaced once with that shortcut; Windows Codex will not be closed automatically.`:`Debug port ${port} is closed; after installing the service, save your work, fully quit Codex and reopen its original icon. The existing instance is protected.`);
+  if(!sockets.length)throw new Error(process.platform==='win32'?`Debug port ${port} is closed. An already-running Codex cannot acquire startup flags from another activation. Save work, fully quit it, then use the managed taskbar icon; inspect launcher-status.json for the actual activation result. No client was closed.`:`Debug port ${port} is closed; after installing the service, save your work, fully quit Codex and reopen its original icon. The existing instance is protected.`);
   const records=await processes();
   if(process.platform==='win32'){validateWindowsListeners(sockets,records,app.executable);return;}
   if(sockets.some(s=>!['127.0.0.1','::1'].includes(s.address)))throw new Error('Debug listener must be loopback only');

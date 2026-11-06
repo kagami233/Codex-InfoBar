@@ -4,11 +4,16 @@ import {resolveApp,mainPid,stateRoot,port,processes,powershell} from './platform
 import {inspectWatcher} from './service-state.mjs';
 import {verifyEndpointOwner,listTargets,Cdp} from './cdp.mjs';
 import {windowsSessionFlag,runWindowsSession} from './windows-session.mjs';
+import {inspectWindowsStartupTask} from './windows-startup.mjs';
 if(process.platform==='win32'&&!process.argv.includes(windowsSessionFlag)){
  process.exitCode=await runWindowsSession(import.meta.url,process.argv.slice(2),{run:powershell});
 }else{
 console.log(JSON.stringify({platform:process.platform,node:process.version,stateRoot,port}));
 try{const app=await resolveApp();console.log(JSON.stringify({app:app.app,executable:app.executable,pid:await mainPid(app)}));}catch(e){console.error(e.message);process.exitCode=1;}
+if(process.platform==='win32')try{
+ const task=await inspectWindowsStartupTask({app:await resolveApp(),run:powershell});console.log('Official login startup:',JSON.stringify(task));
+ if(task&&(task.state===2||task.state===4||(task.state===null&&task.defaultEnabled))){console.error('Official login task can open Codex without InfoBar debugging; run install:service to configure one managed login route');process.exitCode=1;}
+}catch(error){console.error('Login startup: '+error.message);process.exitCode=1;}
 try{
  const watcher=await inspectWatcher({stateRoot,allowedScripts:[path.join(stateRoot,'runtime/src/watcher.mjs'),fileURLToPath(new URL('./watcher.mjs',import.meta.url))],readProcesses:processes});
  console.log('Watcher:',JSON.stringify(watcher));

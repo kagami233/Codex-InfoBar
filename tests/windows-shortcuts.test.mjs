@@ -5,6 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import {syncWindowsShortcuts,restoreWindowsShortcuts,debugArguments} from '../src/windows-shortcuts.mjs';
 import {powershell,psLiteral} from '../src/platform.mjs';
+import {fileURLToPath} from 'node:url';
+import {desiredShellRoute,setShortcutShellRoute,shortcutShellRoute,managedShellAppId} from '../src/windows-shell.mjs';
 
 test('Windows existing icons launch the official executable with loopback debugging and uninstall restores exact originals',{skip:process.platform!=='win32',timeout:60000},async t=>{
  const directory=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),"infobar shortcut O'Brien ")));
@@ -50,8 +52,15 @@ test('stable pins survive consecutive package changes and default-link recreatio
  const newer={...options,app:{executable:next}};
  await syncWindowsShortcuts(newer);assert.equal((await read(pin)).target,launchTarget,'target is independent of installed version');
  await fs.copyFile(pin,clone);await syncWindowsShortcuts(newer);
+ const route=JSON.parse(await powershell(`Add-Type -LiteralPath ${psLiteral(fileURLToPath(new URL('../src/windows-shell.cs',import.meta.url)))};[CodexInfoBar.WindowsShellRoute]::ReadShortcut(${psLiteral(pin)})|ConvertTo-Json -Compress`));
+ await setShortcutShellRoute({file:pin,run:powershell,expected:route,desired:{appId:'com.openai.codex',relaunch:null,displayName:null,icon:null}});
+ assert.deepEqual((await syncWindowsShortcuts(newer)).updated,[await fs.realpath(pin)],'an update may reset only Shell metadata while keeping the stable target');
+ await setShortcutShellRoute({file:pin,run:powershell,expected:route,desired:{...route,appId:'owner.custom.application'}});
+ assert.deepEqual((await syncWindowsShortcuts(newer)).skipped,[await fs.realpath(pin)],'a foreign owner application identity must remain protected');
+ await setShortcutShellRoute({file:pin,run:powershell,expected:{...route,appId:'owner.custom.application'},desired:route});
  // Store/Explorer can recreate the same file with the registered app's defaults.
- await powershell(`$w=New-Object -ComObject WScript.Shell;$s=$w.CreateShortcut(${psLiteral(pin)});$s.TargetPath=${psLiteral(next)};$s.Arguments='';$s.WorkingDirectory=${psLiteral(path.dirname(next))};$s.IconLocation=',0';$s.Save()`);
+ await fs.rm(pin);
+ await powershell(`$w=New-Object -ComObject WScript.Shell;$s=$w.CreateShortcut(${psLiteral(pin)});$s.TargetPath=${psLiteral(next)};$s.Arguments='';$s.Description='same name';$s.WorkingDirectory=${psLiteral(path.dirname(next))};$s.IconLocation=',0';$s.Save()`);
  assert.deepEqual((await syncWindowsShortcuts(newer)).updated,[await fs.realpath(pin)]);
  assert.deepEqual(await read(pin),{target:launchTarget,arguments:'',description:'same name'});
  await restoreWindowsShortcuts({stateRoot,run:powershell});
@@ -86,4 +95,25 @@ test('Windows upgrade refreshes the same pin despite Explorer binary metadata ch
  await restoreWindowsShortcuts({stateRoot,run:powershell});
  current=JSON.parse(await powershell(`$w=New-Object -ComObject WScript.Shell;$s=$w.CreateShortcut(${psLiteral(pin)});@{description=$s.Description;arguments=$s.Arguments}|ConvertTo-Json -Compress`));
  assert.equal(current.description,'owner changed title');assert.equal(current.arguments,debugArguments(9341));
+});
+
+test('a repinned legacy helper migrates identity and uninstall removes its inherited relaunch command',{skip:process.platform!=='win32',timeout:60000},async t=>{
+ const directory=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'infobar legacy identity ')));
+ t.after(async()=>{if(!path.resolve(directory).startsWith(path.resolve(await fs.realpath(os.tmpdir()))+path.sep))throw new Error('Unsafe cleanup');await fs.rm(directory,{recursive:true,force:true,maxRetries:5,retryDelay:100});});
+ const stateRoot=path.join(directory,'state'),links=path.join(directory,'TaskBar');await fs.mkdir(path.join(stateRoot,'launcher'),{recursive:true});await fs.mkdir(links);
+ const oldHelper=path.join(stateRoot,'launcher','ChatGPT.exe'),newHelper=path.join(stateRoot,'launcher','CodexInfoBarLauncher.exe'),official=path.join(directory,'official.exe');
+ for(const file of [oldHelper,newHelper,official])await fs.writeFile(file,'fixture only; never launched');
+ const pin=path.join(links,'ChatGPT (2).lnk');
+ await powershell(`$w=New-Object -ComObject WScript.Shell;$l=$w.CreateShortcut(${psLiteral(pin)});$l.TargetPath=${psLiteral(official)};$l.Save()`);
+ const options={app:{executable:official},port:9341,stateRoot,run:powershell,roots:[links],launchTarget:oldHelper};
+ await syncWindowsShortcuts(options);
+ const read=async()=>JSON.parse(await powershell(`$w=New-Object -ComObject WScript.Shell;$s=New-Object -ComObject Shell.Application;$l=$w.CreateShortcut(${psLiteral(pin)});$i=$s.NameSpace(${psLiteral(links)}).ParseName('ChatGPT (2).lnk');@{target=$l.TargetPath;appId=$i.ExtendedProperty('System.AppUserModel.ID');relaunch=$i.ExtendedProperty('System.AppUserModel.RelaunchCommand');displayName=$i.ExtendedProperty('System.AppUserModel.RelaunchDisplayNameResource');relaunchIcon=$i.ExtendedProperty('System.AppUserModel.RelaunchIconResource')}|ConvertTo-Json -Compress`));
+ const legacy={...desiredShellRoute(oldHelper,official+',0'),appId:'com.openai.codex'};
+ await setShortcutShellRoute({file:pin,run:powershell,expected:shortcutShellRoute(await read()),desired:legacy});
+ // Recreate the backup state produced when the user pins an already managed window.
+ const file=path.join(stateRoot,'shortcuts.json'),saved=JSON.parse(await fs.readFile(file,'utf8')),entry=saved.entries[0];
+ entry.adopted=true;entry.routeBefore=legacy;entry.metadata={...entry.metadata,appId:legacy.appId,relaunch:legacy.relaunch,displayName:legacy.displayName,relaunchIcon:legacy.icon};await fs.writeFile(file,JSON.stringify(saved));
+ assert.deepEqual((await syncWindowsShortcuts({...options,launchTarget:newHelper})).updated,[await fs.realpath(pin)]);
+ let current=await read();assert.equal(current.target,newHelper);assert.equal(current.appId,managedShellAppId);assert.equal(current.displayName,'ChatGPT');
+ await restoreWindowsShortcuts({stateRoot,run:powershell});current=await read();assert.equal(current.target,official);assert.equal(current.appId,'com.openai.codex');assert.equal(current.relaunch,null);
 });
