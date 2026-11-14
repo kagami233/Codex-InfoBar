@@ -17,6 +17,8 @@
   let mounted = false;
   let lastRoute = null;
   let lastView = "";
+  let cardsMetric = null;
+  let cardTooltipOpen = false;
   const snapshots = new Map();
   const instanceId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const host = document.createElement("div");
@@ -53,9 +55,16 @@
     .quota-label { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:10.4px; line-height:normal; pointer-events:none; }
     .quota-track { stroke:currentColor; opacity:.24; }
     .quota-fill { stroke:var(--codex-hud-quota-color, #9be8c2); }
+    .quota-ring[data-quota-low="true"] .quota-fill,
+    .quota-ring[data-quota-low="true"] .quota-track { stroke:var(--codex-hud-quota-low-color, #f87171); }
     .quota-unknown { opacity:.5; }
     .reset-card { color:var(--codex-hud-card-color, #e9c77b); opacity:1; }
     .value, .quota-label { color:var(--color-token-text-primary, inherit); font-variant-numeric:tabular-nums; font-weight:500; }
+    .card-tooltip { display:none; position:fixed; inset:auto; margin:0; padding:6px 9px;
+      max-width:calc(100vw - 16px); border:1px solid #555; border-radius:6px;
+      background:#252525; color:#f3f3f3; font:11px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+      white-space:nowrap; pointer-events:none; box-shadow:0 3px 12px #0004; }
+    .card-tooltip:popover-open { display:block; }
     @media(max-width:600px) { .bar { gap:3px 10px; padding:4px 8px; } }
   `;
   const bar = document.createElement("div");
@@ -64,6 +73,37 @@
   bar.setAttribute("aria-live", "off");
   bar.setAttribute("aria-label", "Codex 会话统计");
   shadow.append(style, bar);
+  const cardTooltip = document.createElement('div');
+  cardTooltip.className = 'card-tooltip';
+  cardTooltip.setAttribute('popover', 'manual');
+  cardTooltip.setAttribute('role', 'tooltip');
+  shadow.appendChild(cardTooltip);
+
+  function cardTooltipText() {
+    const count = resetCardCount();
+    return `重置卡:${count === null ? '—' : `${count}张`}`;
+  }
+  function positionCardTooltip() {
+    const anchor = cardsMetric.getBoundingClientRect();
+    const bounds = cardTooltip.getBoundingClientRect();
+    cardTooltip.style.left = `${Math.max(8, Math.min(anchor.left, innerWidth - bounds.width - 8))}px`;
+    cardTooltip.style.top = `${Math.max(8, anchor.top - bounds.height - 8)}px`;
+  }
+  function showCardTooltip() {
+    if (typeof cardTooltip.showPopover !== 'function') return;
+    cardTooltip.textContent = cardTooltipText();
+    cardTooltip.showPopover();
+    cardTooltipOpen = true;
+    cardsMetric.title = '';
+    positionCardTooltip();
+  }
+  function hideCardTooltip() {
+    if (!cardTooltipOpen) return;
+    cardTooltip.hidePopover();
+    cardTooltipOpen = false;
+    cardTooltip.textContent = '';
+    cardsMetric.title = cardTooltipText();
+  }
 
   function composerThread(composer) {
     if (!composer) return null;
@@ -256,7 +296,7 @@
       const value = `${multipleBuckets ? `${bucket || "用量"} ` : ""}${windows.length > 1 ? `${windowLabel(window)} ` : ""}${resetCountdown(selected.at)}`;
       const cardDetail = selected.card ? `倒计时为最近可用重置卡到期时间：${clock.format(selected.at * 1000)}（北京时间）；早于本周期自然重置。卡片到期不会自动重置额度。\n` : "";
       metric("reset", selected.card ? "重置卡到期" : "用量重置", value,
-        `${cardDetail}${quota}。用量从顶部顺时针消耗，亮色圆环表示剩余额度，暗色表示已用；虚线表示未知或等待更新。\n自然重置 ${detail}\n账户额度按最近记录显示；到点后等待新记录确认，不代表已完成重置。`, remaining, selected.card);
+        `${cardDetail}${quota}。用量从顶部逆时针消耗，亮色圆环表示剩余额度，低于 20% 时变红；暗色表示已用，虚线表示未知或等待更新。\n自然重置 ${detail}\n账户额度按最近记录显示；到点后等待新记录确认，不代表已完成重置。`, remaining, selected.card);
     }
   }
   const icons = {
@@ -268,12 +308,20 @@
     cards: ["M7 3h12a2 2 0 0 1 2 2v12", "M5 7h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2Z", "M7 12h6M7 16h3"],
   };
   function metric(iconName, label, value, tooltip, remainingPercent = null, card = false) {
+    if (iconName === 'cards' && cardsMetric) {
+      cardsMetric.title = cardTooltipOpen ? '' : cardTooltipText();
+      cardsMetric.setAttribute('aria-label', `重置卡:${value}`);
+      cardsMetric.children[1].textContent = value;
+      if (cardTooltipOpen) cardTooltip.textContent = cardTooltipText();
+      return;
+    }
     const item = document.createElement("span");
     item.className = "metric";
     const hoverNames = { speed:'平均token输出速度', cache:'命中缓存', compact:'压缩次数', context:'上下文余量', budget:'剩余压缩余量' };
     item.title = iconName === 'reset'
       ? `套餐剩余：${remainingPercent === null ? '—' : Math.round(remainingPercent) + '%'}；${card ? '重置卡到期时间' : '重置剩余时间'}：${value}`
       : `${hoverNames[iconName] ?? label}：${value}`;
+    if (iconName === 'cards') item.title = cardTooltipText();
     item.setAttribute("role", "group");
     const quotaLabel = iconName === "reset" ? `；${remainingPercent !== null ? `剩余 ${Math.round(remainingPercent * 10) / 10}%` : "剩余额度未知"}` : "";
     item.setAttribute("aria-label", `${label}：${value}${quotaLabel}`);
@@ -286,6 +334,7 @@
       icon.setAttribute("class", "icon quota-ring");
       icon.setAttribute("stroke-width", "1.8");
       icon.setAttribute("stroke-linecap", "butt");
+      icon.setAttribute('data-quota-low', String(remainingPercent !== null && remainingPercent < 20));
       const circle = (attributes) => {
         const node = document.createElementNS("http://www.w3.org/2000/svg", "circle");
         for (const [name, value] of Object.entries({ cx: "12", cy: "12", r: "9", pathLength: "100", ...attributes })) node.setAttribute(name, value);
@@ -296,7 +345,7 @@
         : { class: "quota-track" });
       if (remainingPercent > 0) circle({
         class: "quota-fill", "stroke-dasharray": `${remainingPercent} ${100 - remainingPercent}`,
-        "stroke-dashoffset": String(-(100 - remainingPercent)),
+        "stroke-dashoffset": "0",
         transform: "rotate(-90 12 12)",
       });
     } else {
@@ -329,13 +378,21 @@
       }
       item.appendChild(badge);
     }
-    bar.appendChild(item);
+    if (iconName === 'cards') {
+      cardsMetric = item;
+      item.setAttribute('aria-label', cardTooltipText());
+      item.addEventListener('pointerenter', showCardTooltip);
+      item.addEventListener('pointerleave', hideCardTooltip);
+    }
+    if (cardsMetric?.parentElement === bar) cardsMetric.before(item);
+    else bar.appendChild(item);
   }
   function render(stale, cached = false) {
     const view = JSON.stringify([snapshot, stale, cached, freshAccount() ? accountSnapshot : null, resetDisplay(), resetCardCount()]);
     if (view === lastView) return;
     lastView = view;
-    bar.replaceChildren();
+    // Keep the hovered card in place while telemetry redraws the other values.
+    for (const item of Array.from(bar.children)) if (item !== cardsMetric) item.remove();
     bar.title = "";
     const values = stale || snapshot.status !== "ok" ? {} : snapshot;
     metric("speed", "平均输出", numeric(values.averageOutputTps) ? `${values.averageOutputTps.toFixed(1)} tok/s` : "—",
@@ -374,6 +431,7 @@
       receivedAt = Date.now();
     }
     if (!threadId && !draft) {
+      hideCardTooltip();
       host.remove();
       mounted = false;
       return;
@@ -382,6 +440,7 @@
       // Occluded/background windows may temporarily have no measurable layout.
       // Keep their own node and data; never borrow another window's snapshot.
       if (document.hidden && host.isConnected) return;
+      hideCardTooltip();
       host.remove();
       mounted = false;
       return;
@@ -401,6 +460,7 @@
     mounted = true;
     const old = Date.now() - receivedAt > EXPIRY_MS;
     render(old && Date.now() - collectorAt > EXPIRY_MS, old && Date.now() - collectorAt <= EXPIRY_MS);
+    if (cardTooltipOpen) positionCardTooltip();
   }
 
   const timer = setInterval(refresh, 500);
@@ -463,6 +523,7 @@
       return { mounted, threadId: getThreadId(), position, stale: Boolean(snapshot && Date.now() - receivedAt > EXPIRY_MS), removed, instanceId, newConversation: Boolean(snapshot?.draft) };
     },
     remove() {
+      hideCardTooltip();
       removed = true;
       window.__CODEX_METRICS_ACCOUNT__?.remove?.();
       clearInterval(timer);

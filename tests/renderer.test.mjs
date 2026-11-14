@@ -12,6 +12,10 @@ class Element {
   setAttribute(name, value) { this.attributes[name] = value; }
   getAttribute(name) { return this.attributes[name] ?? null; }
   attachShadow() { this.shadowRoot = new Element("shadow"); return this.shadowRoot; }
+  addEventListener(name, callback) { (this.listeners ??= new Map()).set(name, callback); }
+  dispatch(name) { this.listeners?.get(name)?.(); }
+  showPopover() { this.popoverOpen = true; }
+  hidePopover() { this.popoverOpen = false; }
   append(...nodes) { for (const node of nodes) this.appendChild(node); }
   appendChild(node) { node.remove(); this.children.push(node); node.parentElement = this; return node; }
   replaceChildren(...nodes) { for (const node of [...this.children]) node.remove(); this.append(...nodes); }
@@ -24,7 +28,7 @@ class Element {
   get lastElementChild() { return this.children.at(-1); }
   get isConnected() { return this.parentElement !== null; }
   closest() { return null; }
-  getBoundingClientRect() { return { width: 700, height: 100, top: 500, bottom: 600 }; }
+  getBoundingClientRect() { return { width: 700, height: 100, left:0, right:700, top:500, bottom:600 }; }
   content() { return this.textContent + this.children.map((child) => child.content()).join(""); }
 }
 
@@ -50,7 +54,7 @@ function environment(path = `/local/${THREAD}`) {
     querySelectorAll(selector) { return selector === '[data-app-action-sidebar-thread-active="true"]' ? activeRows : composerVisible && selector === (modernComposer ? '[data-composer-body]' : '.composer-surface-chrome') ? [composer] : []; },
   };
   const context = vm.createContext({
-    window, document, URL, innerHeight: 900,
+    window, document, URL, innerHeight: 900, innerWidth:1000,
     getComputedStyle() { return { display: "block", visibility: "visible" }; },
     Date: { now: () => now, parse: Date.parse },
     setInterval(callback) { const id = timers.size + 1; timers.set(id, callback); return id; },
@@ -225,7 +229,7 @@ test("routes, unavailable composers and stale snapshots never display old number
   const bar = env.host.shadowRoot.children[1];
   assert.equal(bar.title, "");
   assert.equal(bar.children.length, 7);
-  assert.ok(bar.children.every(node => node.children[1].content() === "—" && node.title.endsWith("：—")));
+  assert.ok(bar.children.every(node => node.children[1].content() === "—" && /[：:]—$/.test(node.title)));
   assert.doesNotMatch(env.host.shadowRoot.content(), /12\.3 tok\/s/);
   env.api.update(snapshot());
   env.hideComposer();
@@ -300,13 +304,13 @@ test("quota ring highlights remaining usage and keeps unknown or expired data ne
   const fill = () => reset().children[0].children[0].children.find(node => node.attributes.class === "quota-fill");
   update(25);
   assert.equal(fill().attributes["stroke-dasharray"], "75 25");
-  assert.equal(fill().attributes["stroke-dashoffset"], "-25");
+  assert.equal(fill().attributes["stroke-dashoffset"], "0");
   assert.equal(fill().attributes.transform, "rotate(-90 12 12)");
   assert.match(reset().attributes["aria-label"], /剩余 75%/);
-  // At half used, the consumed clockwise arc is on the right and the remaining arc is on the left.
+  // At half used, counterclockwise consumption removes the left arc, leaving the right lit.
   update(50);
   assert.equal(fill().attributes["stroke-dasharray"], "50 50");
-  assert.equal(fill().attributes["stroke-dashoffset"], "-50");
+  assert.equal(fill().attributes["stroke-dashoffset"], "0");
   update(0);
   assert.equal(fill().attributes["stroke-dasharray"], "100 0");
   assert.equal(fill().attributes["stroke-dashoffset"], "0");
@@ -351,7 +355,7 @@ test("earlier available reset card replaces only the countdown and adds a traili
   assert.match(reset().title, /重置卡到期时间：0天 00时 05分/);
   const fill = reset().children[0].children[0].children.find(node => node.attributes.class === "quota-fill");
   assert.equal(fill.attributes["stroke-dasharray"], "40 60");
-  assert.equal(fill.attributes["stroke-dashoffset"], "-60");
+  assert.equal(fill.attributes["stroke-dashoffset"], "0");
   assert.equal(env.host.shadowRoot.children[1].children.length, 7);
   for (const cards of [[], null, [{ expiresAt: 86401 }], [{ expiresAt: 86402 }], [{ expiresAt: 1 }]]) {
     env.api.updateAccount({ observedAt: 1000, resetCards: cards });
@@ -429,7 +433,7 @@ test('ring prints remaining percentage and ignores historical model-default comp
   const wrap=metrics.find(n=>n.attributes['data-metric']==='reset').children[0];
   const ring=wrap.children[0];
   assert.equal(wrap.children.find(n=>n.attributes.class==='quota-label').textContent,'24');
-  assert.equal(ring.children.find(n=>n.attributes.class==='quota-fill').attributes['stroke-dashoffset'],'-76');
+  assert.equal(ring.children.find(n=>n.attributes.class==='quota-fill').attributes['stroke-dashoffset'],'0');
   const budget=metrics.find(n=>n.attributes['data-metric']==='budget');
   assert.equal(budget.children[1].textContent,'—');
   assert.equal(budget.title,'剩余压缩余量：—');
@@ -438,7 +442,7 @@ test('ring prints remaining percentage and ignores historical model-default comp
 
 test('hover text contains only the requested name and current display value',()=>{
  const env=environment();env.api.update(snapshot({compactionCount:7,usageResets:[{limitId:'codex',resetsAt:301,usedPercent:78}],compactReference:{kind:'model-default-reference',limit:100,remaining:13,remainingPercent:13}}));
- const expected={speed:'平均token输出速度：12.3 tok/s',cache:'命中缓存：75.0%',compact:'压缩次数：7次',context:'上下文余量：10.0k tok',budget:'剩余压缩余量：—',reset:'套餐剩余：22%；重置剩余时间：0天 00时 05分',cards:'可用重置卡：—'};
+ const expected={speed:'平均token输出速度：12.3 tok/s',cache:'命中缓存：75.0%',compact:'压缩次数：7次',context:'上下文余量：10.0k tok',budget:'剩余压缩余量：—',reset:'套餐剩余：22%；重置剩余时间：0天 00时 05分',cards:'重置卡:—'};
  for(const item of env.host.shadowRoot.children[1].children)assert.equal(item.title,expected[item.attributes['data-metric']]);
 });
 
@@ -484,18 +488,49 @@ test('calibrated compaction estimate is displayed approximately while historical
 test('card count follows countdown, decreases for every expired card, and survives cached restore',()=>{
  const env=environment();env.api.update(snapshot());
  const cards=()=>env.host.shadowRoot.children[1].children.at(-1);
- assert.equal(cards().title,'可用重置卡：—');
+ assert.equal(cards().title,'重置卡:—');
  env.api.updateAccount({observedAt:1000,cached:true,resetCardCount:8,resetCardExpiries:[2,2,61],resetCards:[{expiresAt:2},{expiresAt:61}]});
  assert.equal(cards().attributes['data-metric'],'cards');
  assert.equal(cards().children[1].textContent,'8张');
  assert.equal(cards().previousElementSibling.attributes['data-metric'],'reset');
  env.tick(1000);
- assert.equal(cards().title,'可用重置卡：6张','identical expiry timestamps represent distinct cards');
+ assert.equal(cards().title,'重置卡:6张','identical expiry timestamps represent distinct cards');
  env.tick(59000);
  assert.equal(cards().children[1].textContent,'5张');
  env.api.updateAccount({observedAt:61000,resetCardCount:0,resetCardExpiries:[]});
- assert.equal(cards().title,'可用重置卡：0张');
+ assert.equal(cards().title,'重置卡:0张');
  env.tick(90001);
- assert.equal(cards().title,'可用重置卡：—');
+ assert.equal(cards().title,'重置卡:—');
  env.api.updateAccount(null);assert.equal(cards().children[1].textContent,'—');
+});
+
+test('card hover survives telemetry updates and shows live count until leave or removal',()=>{
+ const env=environment();env.api.update(snapshot());
+ env.api.updateAccount({observedAt:1000,resetCardCount:2,resetCardExpiries:[]});
+ const card=env.host.shadowRoot.children[1].children.at(-1);
+ const popup=env.host.shadowRoot.children[2];
+ card.dispatch('pointerenter');
+ assert.equal(popup.popoverOpen,true);
+ assert.equal(popup.textContent,'重置卡:2张');
+ env.api.update(snapshot({averageOutputTps:42}));
+ assert.equal(env.host.shadowRoot.children[1].children.at(-1),card,'keep hovered node connected');
+ assert.equal(popup.popoverOpen,true);
+ env.api.updateAccount({observedAt:1000,resetCardCount:1,resetCardExpiries:[]});
+ assert.equal(popup.textContent,'重置卡:1张');
+ card.dispatch('pointerleave');
+ assert.equal(popup.popoverOpen,false);
+ assert.equal(card.title,'重置卡:1张');
+ card.dispatch('pointerenter');env.hideComposer();
+ assert.equal(popup.popoverOpen,false);
+});
+
+test('quota low color uses the actual remaining fraction with a strict 20 percent boundary',()=>{
+ const env=environment();
+ const ring=()=>env.host.shadowRoot.children[1].children.find(n=>n.attributes['data-metric']==='reset').children[0].children[0];
+ for(const [used,low] of [[79,false],[80,false],[80.01,true],[99,true],[100,true],[null,false]]){
+  env.api.update(snapshot({usageResets:[{limitId:'codex',resetsAt:86401,usedPercent:used}]}));
+  assert.equal(ring().attributes['data-quota-low'],String(low));
+ }
+ env.api.update(snapshot({usageResets:[{limitId:'codex',resetsAt:1,usedPercent:99}]}));
+ assert.equal(ring().attributes['data-quota-low'],'false','expired quota is unknown');
 });
