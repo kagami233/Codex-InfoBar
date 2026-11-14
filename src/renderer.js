@@ -18,7 +18,6 @@
   let lastRoute = null;
   let lastView = "";
   let cardsMetric = null;
-  let cardTooltipOpen = false;
   const snapshots = new Map();
   const instanceId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const host = document.createElement("div");
@@ -60,11 +59,6 @@
     .quota-unknown { opacity:.5; }
     .reset-card { color:var(--codex-hud-card-color, #e9c77b); opacity:1; }
     .value, .quota-label { color:var(--color-token-text-primary, inherit); font-variant-numeric:tabular-nums; font-weight:500; }
-    .card-tooltip { display:none; position:fixed; inset:auto; margin:0; padding:6px 9px;
-      max-width:calc(100vw - 16px); border:1px solid #555; border-radius:6px;
-      background:#252525; color:#f3f3f3; font:11px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
-      white-space:nowrap; pointer-events:none; box-shadow:0 3px 12px #0004; }
-    .card-tooltip:popover-open { display:block; }
     @media(max-width:600px) { .bar { gap:3px 10px; padding:4px 8px; } }
   `;
   const bar = document.createElement("div");
@@ -73,36 +67,9 @@
   bar.setAttribute("aria-live", "off");
   bar.setAttribute("aria-label", "Codex 会话统计");
   shadow.append(style, bar);
-  const cardTooltip = document.createElement('div');
-  cardTooltip.className = 'card-tooltip';
-  cardTooltip.setAttribute('popover', 'manual');
-  cardTooltip.setAttribute('role', 'tooltip');
-  shadow.appendChild(cardTooltip);
-
   function cardTooltipText() {
     const count = resetCardCount();
     return `重置卡:${count === null ? '—' : `${count}张`}`;
-  }
-  function positionCardTooltip() {
-    const anchor = cardsMetric.getBoundingClientRect();
-    const bounds = cardTooltip.getBoundingClientRect();
-    cardTooltip.style.left = `${Math.max(8, Math.min(anchor.left, innerWidth - bounds.width - 8))}px`;
-    cardTooltip.style.top = `${Math.max(8, anchor.top - bounds.height - 8)}px`;
-  }
-  function showCardTooltip() {
-    if (typeof cardTooltip.showPopover !== 'function') return;
-    cardTooltip.textContent = cardTooltipText();
-    cardTooltip.showPopover();
-    cardTooltipOpen = true;
-    cardsMetric.title = '';
-    positionCardTooltip();
-  }
-  function hideCardTooltip() {
-    if (!cardTooltipOpen) return;
-    cardTooltip.hidePopover();
-    cardTooltipOpen = false;
-    cardTooltip.textContent = '';
-    cardsMetric.title = cardTooltipText();
   }
 
   function composerThread(composer) {
@@ -309,10 +276,13 @@
   };
   function metric(iconName, label, value, tooltip, remainingPercent = null, card = false) {
     if (iconName === 'cards' && cardsMetric) {
-      cardsMetric.title = cardTooltipOpen ? '' : cardTooltipText();
-      cardsMetric.setAttribute('aria-label', `重置卡:${value}`);
-      cardsMetric.children[1].textContent = value;
-      if (cardTooltipOpen) cardTooltip.textContent = cardTooltipText();
+      const text = cardTooltipText();
+      // Native tooltips depend on stable DOM and title attributes while hovered.
+      if (cardsMetric.title !== text) {
+        cardsMetric.title = text;
+        cardsMetric.setAttribute('aria-label', text);
+      }
+      if (cardsMetric.children[1].textContent !== value) cardsMetric.children[1].textContent = value;
       return;
     }
     const item = document.createElement("span");
@@ -381,8 +351,6 @@
     if (iconName === 'cards') {
       cardsMetric = item;
       item.setAttribute('aria-label', cardTooltipText());
-      item.addEventListener('pointerenter', showCardTooltip);
-      item.addEventListener('pointerleave', hideCardTooltip);
     }
     if (cardsMetric?.parentElement === bar) cardsMetric.before(item);
     else bar.appendChild(item);
@@ -431,7 +399,6 @@
       receivedAt = Date.now();
     }
     if (!threadId && !draft) {
-      hideCardTooltip();
       host.remove();
       mounted = false;
       return;
@@ -440,7 +407,6 @@
       // Occluded/background windows may temporarily have no measurable layout.
       // Keep their own node and data; never borrow another window's snapshot.
       if (document.hidden && host.isConnected) return;
-      hideCardTooltip();
       host.remove();
       mounted = false;
       return;
@@ -460,7 +426,6 @@
     mounted = true;
     const old = Date.now() - receivedAt > EXPIRY_MS;
     render(old && Date.now() - collectorAt > EXPIRY_MS, old && Date.now() - collectorAt <= EXPIRY_MS);
-    if (cardTooltipOpen) positionCardTooltip();
   }
 
   const timer = setInterval(refresh, 500);
@@ -523,7 +488,6 @@
       return { mounted, threadId: getThreadId(), position, stale: Boolean(snapshot && Date.now() - receivedAt > EXPIRY_MS), removed, instanceId, newConversation: Boolean(snapshot?.draft) };
     },
     remove() {
-      hideCardTooltip();
       removed = true;
       window.__CODEX_METRICS_ACCOUNT__?.remove?.();
       clearInterval(timer);

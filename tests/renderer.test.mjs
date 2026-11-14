@@ -12,10 +12,6 @@ class Element {
   setAttribute(name, value) { this.attributes[name] = value; }
   getAttribute(name) { return this.attributes[name] ?? null; }
   attachShadow() { this.shadowRoot = new Element("shadow"); return this.shadowRoot; }
-  addEventListener(name, callback) { (this.listeners ??= new Map()).set(name, callback); }
-  dispatch(name) { this.listeners?.get(name)?.(); }
-  showPopover() { this.popoverOpen = true; }
-  hidePopover() { this.popoverOpen = false; }
   append(...nodes) { for (const node of nodes) this.appendChild(node); }
   appendChild(node) { node.remove(); this.children.push(node); node.parentElement = this; return node; }
   replaceChildren(...nodes) { for (const node of [...this.children]) node.remove(); this.append(...nodes); }
@@ -504,24 +500,21 @@ test('card count follows countdown, decreases for every expired card, and surviv
  env.api.updateAccount(null);assert.equal(cards().children[1].textContent,'—');
 });
 
-test('card hover survives telemetry updates and shows live count until leave or removal',()=>{
+test('card uses the same native title tooltip as other metrics and keeps it stable across refreshes',()=>{
  const env=environment();env.api.update(snapshot());
  env.api.updateAccount({observedAt:1000,resetCardCount:2,resetCardExpiries:[]});
  const card=env.host.shadowRoot.children[1].children.at(-1);
- const popup=env.host.shadowRoot.children[2];
- card.dispatch('pointerenter');
- assert.equal(popup.popoverOpen,true);
- assert.equal(popup.textContent,'重置卡:2张');
+ assert.equal(card.title,'重置卡:2张');
+ assert.equal(env.host.shadowRoot.children.length,2,'native titles need no custom floating window');
+ let titleWrites=0;
+ Object.defineProperty(card,'title',{get:()=> '重置卡:2张',set(){titleWrites++;},configurable:true});
  env.api.update(snapshot({averageOutputTps:42}));
  assert.equal(env.host.shadowRoot.children[1].children.at(-1),card,'keep hovered node connected');
- assert.equal(popup.popoverOpen,true);
+ assert.equal(titleWrites,0,'unchanged title is not rewritten while hovered');
+ Object.defineProperty(card,'title',{value:'重置卡:2张',writable:true,configurable:true});
  env.api.updateAccount({observedAt:1000,resetCardCount:1,resetCardExpiries:[]});
- assert.equal(popup.textContent,'重置卡:1张');
- card.dispatch('pointerleave');
- assert.equal(popup.popoverOpen,false);
  assert.equal(card.title,'重置卡:1张');
- card.dispatch('pointerenter');env.hideComposer();
- assert.equal(popup.popoverOpen,false);
+ assert.equal(card.getAttribute('aria-label'),'重置卡:1张');
 });
 
 test('quota low color uses the actual remaining fraction with a strict 20 percent boundary',()=>{
