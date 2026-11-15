@@ -173,3 +173,9 @@ try {
   else if (mode === 'attach') await attach();
   else throw new Error('用法：node src/cli.mjs preview|snapshot|attach [--thread UUID] [--position above|below|inside] [--port 9341]');
 } catch (error) { console.error(error.message); process.exitCode = 1; }
+finally {
+  // Cleanup has finished and the cache has been saved. A WebSocket stuck in
+  // its close handshake must not keep this completed collector alive forever,
+  // otherwise the watcher cannot start a replacement after ownership recovers.
+  if (mode === 'attach') setTimeout(() => process.exit(process.exitCode ?? 0), 250).unref();
+}

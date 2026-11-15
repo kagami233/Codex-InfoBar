@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import test from 'node:test';
+import {spawnSync} from 'node:child_process';
 
 // Run the actual attach orchestration with fake CDP/process boundaries; never connect to an app.
 const cli = fs.readFileSync(new URL('../src/cli.mjs', import.meta.url), 'utf8');
@@ -113,4 +114,29 @@ test('source updates replace an older renderer while the matching revision is re
   assert.equal(old.revision, 'fixture-revision');
   const current = await runAttach({ initialRevision: 'fixture-revision' });
   assert.equal(current.installs, 0);
+});
+
+test('completed collectors exit after cleanup even when a connection keeps the event loop alive', () => {
+  for (const fail of [false, true]) {
+    const script = `
+      const mode = 'attach';
+      // Model a connection whose close handshake never completes.
+      setInterval(() => {}, 10000);
+      async function attach() {
+        try { if (${fail}) throw new Error('owner changed'); }
+        finally {
+          await new Promise(resolve => setTimeout(resolve, 10));
+          process.stdout.write('cleanup saved cache\\n');
+        }
+      }
+      ${cli.slice(end)}
+    `;
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+      encoding:'utf8', timeout:3000,
+    });
+    assert.equal(result.error, undefined, 'collector must exit so the watcher can replace it');
+    assert.equal(result.status, fail ? 1 : 0);
+    assert.equal(result.stdout, 'cleanup saved cache\n');
+    if (fail) assert.match(result.stderr, /owner changed/);
+  }
 });
