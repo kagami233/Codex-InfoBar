@@ -11,9 +11,9 @@ const end = cli.lastIndexOf('\ntry {');
 assert.ok(start >= 0 && end > start, 'attach entry point must be present');
 const attachSource = cli.slice(start, end);
 
-async function runAttach({ signalAt = 'update', failPosition = false, ownerFailure = false, initialRevision = null } = {}) {
+async function runAttach({ signalAt = 'update', failPosition = false, ownerFailure = false, initialRevision = null, initialHealth = true } = {}) {
   const handlers = {};
-  const state = { installed: initialRevision !== null, revision: initialRevision, closed: false, installs: 0, removes: 0, evaluations: 0, peakEvaluations: 0, ownerChecks: 0, lists: 0 };
+  const state = { installed: initialRevision !== null, revision: initialRevision, healthy:initialHealth, heartbeats:[], closed: false, installs: 0, removes: 0, evaluations: 0, peakEvaluations: 0, ownerChecks: 0, lists: 0 };
   class FakeCdp {
     closed = false;
     async open() {
@@ -33,10 +33,11 @@ async function runAttach({ signalAt = 'update', failPosition = false, ownerFailu
         if (expression.startsWith('Boolean(')) {
           if (signalAt === 'ready') handlers.SIGINT();
           await Promise.resolve();
-          return state.installed && state.revision === 'fixture-revision';
+          return state.installed && state.revision === 'fixture-revision' && state.healthy;
         }
         if (expression === 'INSTALL_RENDERER') {
           state.installed = true;
+          state.healthy = true;
           state.installs++;
           if (signalAt === 'install') handlers.SIGINT();
           await Promise.resolve();
@@ -48,6 +49,7 @@ async function runAttach({ signalAt = 'update', failPosition = false, ownerFailu
           throw new Error('position script failed');
         }
         if (expression.includes('.getThreadId()')) return '01234567-89ab-cdef-0123-456789abcdef';
+        if (expression.includes('checkHealth?.()')) return {expected:true,mounted:state.installed,healthy:state.healthy};
         if (expression.includes('.update(') && signalAt === 'update') handlers.SIGINT();
         return true;
       } finally { state.evaluations--; }
@@ -55,6 +57,7 @@ async function runAttach({ signalAt = 'update', failPosition = false, ownerFailu
     close() { this.closed = true; state.closed = true; }
   }
   const context = vm.createContext({
+    CollectorHeartbeat: class { async pulse(phase, summary) { state.heartbeats.push({phase,...summary}); } },
     SnapshotCache: class { async load() { return new Map(); } async save() {} },
     options: { port: 9341, position: 'above' }, renderer: 'INSTALL_RENDERER', rendererRevision: 'fixture-revision', Cdp: FakeCdp,
     verifyEndpointOwner: async () => {
@@ -114,6 +117,15 @@ test('source updates replace an older renderer while the matching revision is re
   assert.equal(old.revision, 'fixture-revision');
   const current = await runAttach({ initialRevision: 'fixture-revision' });
   assert.equal(current.installs, 0);
+});
+
+test('an unhealthy mounted component is replaced even when its source revision matches', async () => {
+  const result = await runAttach({initialRevision:'fixture-revision', initialHealth:false});
+  assert.equal(result.installs,1);
+  assert.equal(result.healthy,true);
+  assert.equal(result.heartbeats[0].phase,'starting');
+  assert.ok(result.heartbeats.some(item=>item.mounted===1));
+  assert.equal(result.heartbeats.at(-1).phase,'stopped');
 });
 
 test('completed collectors exit after cleanup even when a connection keeps the event loop alive', () => {

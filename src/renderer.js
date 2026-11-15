@@ -487,6 +487,17 @@
     getStatus() {
       return { mounted, threadId: getThreadId(), position, stale: Boolean(snapshot && Date.now() - receivedAt > EXPIRY_MS), removed, instanceId, newConversation: Boolean(snapshot?.draft) };
     },
+    checkHealth() {
+      refresh();
+      const composer = findComposer();
+      const expected = !document.hidden && Boolean(composer && (getThreadId() || isNewConversation(composer)));
+      const bounds = host.getBoundingClientRect();
+      const visibleHost = host.isConnected && bounds.width > 0 && bounds.height > 0 &&
+        getComputedStyle(host).display !== 'none';
+      const stale = expected && !snapshot?.draft && Date.now() - collectorAt > EXPIRY_MS;
+      return {expected, mounted:mounted && visibleHost, stale,
+        healthy:!expected || (mounted && visibleHost && bar.isConnected && bar.children.length >= 7 && !stale)};
+    },
     remove() {
       removed = true;
       window.__CODEX_METRICS_ACCOUNT__?.remove?.();

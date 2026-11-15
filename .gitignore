@@ -8,6 +8,7 @@ status.json
 snapshot-cache.json
 settings.json
 watcher-lock.json
+collector-heartbeat-*.json
 *.app/
 .env
 .env.*

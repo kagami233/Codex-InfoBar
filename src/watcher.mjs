@@ -11,6 +11,7 @@ import {syncWindowsShortcuts} from './windows-shortcuts.mjs';
 import {ensureWindowsLauncher,windowsLauncherPaths} from './windows-launcher.mjs';
 import {syncWindowsShell} from './windows-shell.mjs';
 import {syncWindowsStartupTask} from './windows-startup.mjs';
+import {CollectorSupervisor} from './collector-health.mjs';
 import {resolveApp,mainPid,mainProcess,requestedDebugPort,listeners,processes,requestQuit,launch,stateRoot,port,fixedPort,setDebugPort,powershell} from './platform.mjs';
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 async function main(){
@@ -28,15 +29,24 @@ try{lock=await fs.open(lockPath,'wx',0o600);}catch(error){
  await fs.rm(lockPath);lock=await fs.open(lockPath,'wx',0o600);
 }
 await lock.writeFile(JSON.stringify({pid:process.pid,script:fileURLToPath(import.meta.url)}));
-let stopped=false,collector=null,lastError=null,phase=null;
+let stopped=false,lastError=null,phase=null;
 const status=async(pid,action)=>{
  const temporary=path.join(stateRoot,`status.${process.pid}.tmp`);
- await fs.writeFile(temporary,JSON.stringify({observedAt:Date.now(),watcherPid:process.pid,pid,action,phase,debugPort:port,collectorPid:collector?.pid??null,lastError}));
+ await fs.writeFile(temporary,JSON.stringify({observedAt:Date.now(),watcherPid:process.pid,pid,action,phase,debugPort:port,collectorPid:supervisor.child?.pid??null,collectorHealth:supervisor.status(),lastError}));
  await fs.rename(temporary,path.join(stateRoot,'status.json'));
 };
 const logfd=openSync(path.join(stateRoot,'collector.log'),'a',0o600);
-const stopPoll=setInterval(()=>{void fs.access(path.join(stateRoot,'stop')).then(()=>{stopped=true;collector?.kill('SIGTERM');}).catch(()=>{});},500);
-for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>{stopped=true;collector?.kill('SIGTERM');});
+const supervisor = new CollectorSupervisor({stateRoot, log, start:healthEnvironment =>
+ spawn(process.execPath,[fileURLToPath(new URL('./cli.mjs',import.meta.url)),'attach','--port',String(port),'--position','inside'],{
+  cwd:fileURLToPath(new URL('../',import.meta.url)),stdio:['ignore',logfd,logfd],windowsHide:true,
+  env:{...process.env,...healthEnvironment},
+ })});
+const requestStop = () => {
+ stopped = true;
+ void supervisor.stop().catch(error => {lastError=error.message;void log(`Collector stop: ${error.message}`);});
+};
+const stopPoll=setInterval(()=>{void fs.access(path.join(stateRoot,'stop')).then(requestStop).catch(()=>{});},500);
+for(const signal of ['SIGINT','SIGTERM'])process.on(signal,requestStop);
 try{
  try{const settings=JSON.parse(await fs.readFile(path.join(stateRoot,'settings.json'),'utf8'));for(const k of ['CODEX_HOME','CODEX_INFOBAR_APP'])if(settings[k]&&!process.env[k])process.env[k]=settings[k];}catch{}
  let app=await resolveApp(),initial=await mainPid(app);
@@ -46,10 +56,7 @@ try{
  let nextShellCheck=0,shellPid=null,lastObservedPid;
  await log(`Watcher ${process.pid} ready; existing process ${initial??'none'} protected. Port ${port}.`);
  function attach(){
-  if(collector)return;
-  collector=spawn(process.execPath,[fileURLToPath(new URL('./cli.mjs',import.meta.url)),'attach','--port',String(port),'--position','inside'],{cwd:fileURLToPath(new URL('../',import.meta.url)),stdio:['ignore',logfd,logfd],windowsHide:true});
-  collector.once('error',e=>{lastError=e.message;void log(`Collector: ${e.message}`);collector=null;});
-  collector.once('exit',code=>{collector=null;void log(`Collector exited (${code})`);});
+  supervisor.ensureRunning();
  }
  while(!stopped){
   try{await fs.access(path.join(stateRoot,'stop'));stopped=true;break;}catch{}
@@ -87,7 +94,7 @@ try{
    const action=policy.decide({pid,ready,occupied,debugRequested,autoRestart:process.platform!=='win32'});
    if(action!==previous){await log(`State: ${action}; pid=${pid??'none'}; debugRequested=${debugRequested}`);previous=action;}
    phase=null;
-   if(action==='attach'){attach();lastError=null;}
+   if(action==='attach'){attach();lastError=null;}else supervisor.pause();
    await status(pid,action);
    if(action==='restart'&&!stopped){
     phase='graceful-quit';await status(pid,action);
@@ -112,7 +119,7 @@ try{
  }
 }finally{
  clearInterval(stopPoll);
- if(collector){const child=collector;child.kill('SIGTERM');await Promise.race([new Promise(r=>child.once('exit',r)),sleep(7000)]);}
+ await supervisor.stop();
  closeSync(logfd);await lock.close();await fs.rm(lockPath,{force:true});
 }
 }

@@ -527,3 +527,26 @@ test('quota low color uses the actual remaining fraction with a strict 20 percen
  env.api.update(snapshot({usageResets:[{limitId:'codex',resetsAt:1,usedPercent:99}]}));
  assert.equal(ring().attributes['data-quota-low'],'false','expired quota is unknown');
 });
+
+test('mount health repairs a detached host and reports damaged or stale content for reinjection',()=>{
+ const env=environment();env.api.update(snapshot());
+ assert.equal(env.api.checkHealth().healthy,true);
+ env.host.remove();
+ assert.equal(env.api.checkHealth().healthy,true,'reattach the existing node before requesting reinjection');
+ assert.equal(env.host.parentElement,env.composer);
+ env.host.shadowRoot.children[1].replaceChildren();
+ assert.equal(env.api.checkHealth().healthy,false,'empty bar requires full reinjection');
+ env.execute();env.api.update(snapshot());
+ env.tick(31000);
+ assert.equal(env.api.checkHealth().stale,true);
+ assert.equal(env.api.checkHealth().healthy,false);
+ env.api.update(snapshot());assert.equal(env.api.checkHealth().healthy,true);
+ env.background();assert.equal(env.api.checkHealth().expected,false);
+ assert.equal(env.api.checkHealth().healthy,true,'hidden windows are not mount failures');
+});
+
+test('a new draft without per-chat telemetry stays healthy while idle',()=>{
+ const env=environment('/index.html');env.setNativeThread(null,null);env.tick(60000);
+ assert.equal(env.api.checkHealth().expected,true);
+ assert.equal(env.api.checkHealth().healthy,true);
+});

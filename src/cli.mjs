@@ -5,6 +5,7 @@ import { RolloutReader, validateThreadId } from './reader.mjs';
 import { Cdp, listTargets, verifyEndpointOwner } from './cdp.mjs';
 import { SnapshotCache } from './snapshot-cache.mjs';
 import {addCompactionEstimate} from './compaction-estimate.mjs';
+import {CollectorHeartbeat} from './collector-health.mjs';
 
 const here = new URL('.', import.meta.url);
 const args = process.argv.slice(2);
@@ -83,8 +84,24 @@ async function preview() {
 }
 
 async function attach() {
+  const heartbeat = new CollectorHeartbeat();
+  await heartbeat.pulse('starting', {}, true);
   await verifyEndpointOwner(options.port);
   const clients = new Map();
+  const healthByTarget = new Map();
+  let injections = 0;
+  function recordHealth(id, health) {
+    const previous = healthByTarget.get(id);
+    const expected = health?.expected === true;
+    healthByTarget.set(id, {...health, expected,
+      degradedSince:expected && health.healthy !== true ? previous?.degradedSince ?? Date.now() : null});
+  }
+  function healthSummary() {
+    const expected = [...healthByTarget.values()].filter(health => health.expected);
+    const failed = expected.map(health => health.degradedSince).filter(at => at > 0);
+    return {expected:expected.length, mounted:expected.filter(health => health.mounted).length,
+      degradedSince:failed.length ? Math.min(...failed) : null, injections};
+  }
   const diskCache = new SnapshotCache();
   const sharedSnapshots = await diskCache.load();
   console.log(`已恢复 ${sharedSnapshots.size} 个聊天的本地统计缓存。`);
@@ -92,12 +109,13 @@ async function attach() {
   let lastIssue = '';
   async function cleanup() {
     stopping = true;
-    for (const client of clients.values()) {
+    await Promise.allSettled([...clients.values()].map(async client => {
       try { await client.evaluate('window.__CODEX_METRICS_HUD__?.remove()'); } catch {}
       client.close();
-    }
+    }));
     clients.clear();
     try { await diskCache.save(sharedSnapshots, true); } catch (error) { console.error(`状态缓存保存失败：${error.message}`); }
+    await heartbeat.pulse('stopped', healthSummary(), true);
   }
   // Finish the current operation, then clean up exactly once in finally.
   for (const signal of ['SIGINT','SIGTERM']) process.once(signal,() => { stopping = true; });
@@ -105,27 +123,32 @@ async function attach() {
   try {
     while (!stopping) {
       // Ownership failures are fatal, including when a closed port is reused.
+      await heartbeat.pulse('checking-endpoint', healthSummary());
       await verifyEndpointOwner(options.port);
       try {
         const targets = await listTargets(options.port);
         const present = new Set(targets.map(t => t.id));
+        for (const id of healthByTarget.keys()) if (!present.has(id)) healthByTarget.delete(id);
         for (const [id,client] of clients) if (!present.has(id) || client.closed) { client.close(); clients.delete(id); }
+        await heartbeat.pulse('targets-discovered', healthSummary());
         for (const target of targets) {
           if (stopping) break;
           let client = clients.get(target.id);
-          if (!client) {
-            client = await new Cdp(target, options.port).open();
-            clients.set(target.id,client);
-          }
-          if (stopping) break;
           try {
-            let ready = await client.evaluate(`Boolean(window.__CODEX_METRICS_HUD__?.rendererRevision === ${JSON.stringify(rendererRevision)})`);
+            if (!client) {
+              client = await new Cdp(target, options.port).open();
+              clients.set(target.id,client);
+            }
+            if (stopping) break;
+            const ready = await client.evaluate(`Boolean(window.__CODEX_METRICS_HUD__?.rendererRevision === ${JSON.stringify(rendererRevision)} && window.__CODEX_METRICS_HUD__?.checkHealth?.()?.healthy !== false)`);
             if (stopping) break;
             if (!ready) {
+              injections++;
               await client.evaluate(renderer);
               await client.evaluate(`window.__CODEX_METRICS_HUD__.rendererRevision = ${JSON.stringify(rendererRevision)}`);
               await client.evaluate(`window.__CODEX_METRICS_HUD__.setPosition(${JSON.stringify(options.position)})`);
               if (sharedSnapshots.size) await client.evaluate(`window.__CODEX_METRICS_HUD__.primeSnapshots(${JSON.stringify([...sharedSnapshots.values()])})`);
+              console.log(`组件挂载/恢复：${target.id}`);
             }
             // Drive expiry checks from the collector too, so background-window
             // timer throttling does not require focus to reach the last minute.
@@ -138,15 +161,20 @@ async function attach() {
               if (sharedSnapshots.size > 64) sharedSnapshots.delete(sharedSnapshots.keys().next().value);
               await client.evaluate(`window.__CODEX_METRICS_HUD__.update(${JSON.stringify(data)})`);
             }
+            recordHealth(target.id, await client.evaluate('window.__CODEX_METRICS_HUD__?.checkHealth?.() ?? null'));
           } catch (error) {
+            const previous = healthByTarget.get(target.id);
+            if (previous?.expected) recordHealth(target.id, {...previous, healthy:false, mounted:false});
             // A background renderer can pause CDP responses. Keep its HUD;
             // reconnect on the next pass without reinjecting it.
-            if (!error.transient) {
+            if (client && !error.transient) {
               try { await client.evaluate('window.__CODEX_METRICS_HUD__?.remove()'); } catch {}
             }
-            client.close();clients.delete(target.id);
+            client?.close();clients.delete(target.id);
             if (lastIssue !== error.message) console.error(error.message);
             lastIssue = error.message;
+          } finally {
+            await heartbeat.pulse('target-checked', healthSummary());
           }
         }
         // Warm every window with the same bounded, thread-keyed cache, including
@@ -158,6 +186,7 @@ async function attach() {
         }
         lastIssue = '';
         try { await diskCache.save(sharedSnapshots); } catch (error) { console.error(`状态缓存保存失败：${error.message}`); }
+        await heartbeat.pulse('cycle-complete', healthSummary());
       } catch (error) {
         if (lastIssue !== error.message) console.error(error.message);
         lastIssue = error.message;
