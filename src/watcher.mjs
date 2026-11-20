@@ -55,6 +55,7 @@ try{
  const policy=new WatchPolicy(initial);let previous='';
  let shortcutIdentity='',shortcutAttemptIdentity='',nextShortcutCheck=0;
  let nextShellCheck=0,shellPid=null,lastObservedPid;
+ let lastUpdateOfferPid=null,nextUpdateOffer=0;
  await log(`Watcher ${process.pid} ready; existing process ${initial??'none'} protected. Port ${port}.`);
  function attach(){
   supervisor.ensureRunning();
@@ -98,10 +99,12 @@ try{
    if(action==='attach'){attach();lastError=null;}else supervisor.pause();
    await status(pid,action);
    if(process.platform==='win32')await observeWindowsUpdate({stateRoot,app,action,processRecord,offer:async(targetPid,pkg)=>{
+    if(targetPid===lastUpdateOfferPid&&Date.now()<nextUpdateOffer)return;
+    lastUpdateOfferPid=targetPid;nextUpdateOffer=Date.now()+30000;
     const child=spawn(windowsLauncherPaths(stateRoot).executable,['--recover-update',String(targetPid),pkg],{stdio:'ignore',windowsHide:true});
     await new Promise((resolve,reject)=>{child.once('error',reject);child.once('spawn',resolve);});
     child.unref();
-    await log(`Update recovery offered for ${pkg}, pid=${targetPid}.`);
+    await log(`Update recovery checked for ${pkg}, pid=${targetPid}.`);
    }});
    if(action==='restart'&&!stopped){
     phase='graceful-quit';await status(pid,action);

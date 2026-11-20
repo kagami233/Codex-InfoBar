@@ -82,6 +82,14 @@ namespace CodexInfoBar {
         public static string ActivationState(LauncherMain main,int port) {
             return main==null?"not-running":main.CommandLine==null?"identity-unavailable":RequestedPort(main.CommandLine)==port?"debug-requested":"needs-debug-restart";
         }
+        static bool ClaimUpdatePrompt(string state,string package) {
+            string directory=Path.Combine(state,"update-prompts");
+            Directory.CreateDirectory(directory);
+            string marker=Path.Combine(directory,package);
+            try { using(File.Open(marker,FileMode.CreateNew,FileAccess.Write)) {} }
+            catch(IOException) { if(File.Exists(marker))return false;throw; }
+            return true;
+        }
         public static LauncherMain InspectMain(string executable) {
             LauncherMain found=null;
             using(var query=new ManagementObjectSearcher("SELECT ProcessId,ExecutablePath,CommandLine FROM Win32_Process WHERE Name='ChatGPT.exe'"))
@@ -252,6 +260,7 @@ namespace CodexInfoBar {
                     string package=Directory.GetParent(Path.GetDirectoryName(executable)).Name;
                     if(existing==null||existing.Pid!=updatePid||existingState!="needs-debug-restart"||
                        RequestedPort(existing.CommandLine)!=0||package!=args[2]||PackageFamily((uint)updatePid)!=Family)return 0;
+                    if(File.Exists(Path.Combine(state,"stop"))||!ClaimUpdatePrompt(state,package))return 0;
                     Record(state,"update-recovery-prompt",executable,updatePid,port,0);
                     var answer=MessageBox.Show("Windows 更新已启动新版 Codex。恢复底部状态栏需要正常重开一次。\n\n已保存工作，现在重开吗？选择“否”可继续使用，稍后完全退出并点击原任务栏图标即可。","Codex-InfoBar 更新恢复",MessageBoxButtons.YesNo,MessageBoxIcon.Information,MessageBoxDefaultButton.Button2);
                     if(answer!=DialogResult.Yes){Record(state,"repair-deferred",executable,updatePid,port,0);return 2;}
@@ -269,7 +278,7 @@ namespace CodexInfoBar {
                     if(!WaitForExistingWindowOrExit(executable,existing,15000))Record(state,"previous-instance-exited",executable,previous,port,0);
                     existing=InspectMain(executable);existingState=ActivationState(existing,port);
                 }
-                if(update&&(existing==null||existing.Pid!=confirmedUpdate.Pid||existing.Created!=confirmedUpdate.Created||existing.CommandLine!=confirmedUpdate.CommandLine||existingState!="needs-debug-restart"||!EqualPath(executable,ResolveInstalledCodex())))return 0;
+                if(update&&(File.Exists(Path.Combine(state,"stop"))||existing==null||existing.Pid!=confirmedUpdate.Pid||existing.Created!=confirmedUpdate.Created||existing.CommandLine!=confirmedUpdate.CommandLine||existingState!="needs-debug-restart"||!EqualPath(executable,ResolveInstalledCodex())))return 0;
                 if(existingState=="identity-unavailable"){
                     Record(state,existingState,executable,existing.Pid,port,0);
                     if(login)return 2;

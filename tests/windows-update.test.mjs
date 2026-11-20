@@ -12,8 +12,8 @@ test('Store update recovery survives watcher restarts and offers once per affect
  const first='OpenAI.Codex_26.1111.9664.0_x64__2p2nqsd0c76g0';
  const second=first.replace('1111.9664','1117.3838');
  const offers=[];
- const observe=(pkg,action,args='ChatGPT.exe',offer=(...values)=>offers.push(values))=>
-  observeWindowsUpdate({stateRoot,app:{app:path.join(stateRoot,pkg)},action,processRecord:{pid:72,args},offer});
+ const observe=(pkg,action,args='ChatGPT.exe',offer=(...values)=>offers.push(values),pid=72)=>
+  observeWindowsUpdate({stateRoot,app:{app:path.join(stateRoot,pkg)},action,processRecord:{pid,args},offer});
  await observe(first,'needs-debug-launch');
  await observe(first,'attach');
  await observe(first,'needs-debug-launch');
@@ -22,11 +22,16 @@ test('Store update recovery survives watcher restarts and offers once per affect
  await observe(second,'debug-starting');
  assert.equal(offers.length,0);
  await assert.rejects(observe(second,'needs-debug-launch','ChatGPT.exe',()=>{throw new Error('spawn failed');}),/spawn failed/);
+ // The launcher exited before showing a prompt for the first process.
  await observe(second,'needs-debug-launch');
+ await observe(second,'needs-debug-launch','ChatGPT.exe',undefined,73);
+ const prompts=path.join(stateRoot,'update-prompts');
+ await fs.mkdir(prompts);
+ await fs.writeFile(path.join(prompts,second),'');
  await observe(second,'needs-debug-launch');
  await observe(second,'attach');
  await observe(second,'needs-debug-launch');
- assert.deepEqual(offers,[[72,second]]);
+ assert.deepEqual(offers,[[72,second],[73,second]]);
 });
 
 test('installed service Node survives removal of its Store runtime',async t=>{

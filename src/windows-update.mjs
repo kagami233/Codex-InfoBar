@@ -9,16 +9,20 @@ export async function observeWindowsUpdate({stateRoot,app,action,processRecord,o
   catch (error) { if (error.code !== 'ENOENT') throw error; }
   const current = path.basename(app.app);
   if (!/^OpenAI\.Codex_\d+(?:\.\d+){3}_\w+__2p2nqsd0c76g0$/i.test(current)) return;
-  let next;
   if (action === 'attach' && current !== previous.working) {
-    next = {working:current};
+    const temporary = file + '.' + process.pid + '.tmp';
+    await fs.writeFile(temporary, JSON.stringify({working:current}));
+    await fs.rename(temporary, file);
   } else if (action === 'needs-debug-launch' && processRecord?.args && previous.working &&
              current !== previous.working && current !== previous.offered) {
+    try {
+      await fs.access(path.join(stateRoot, 'update-prompts', current));
+      return;
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+    // Only the launcher can confirm that the live process passed its checks
+    // and that the prompt is about to be shown.
     await offer(processRecord.pid, current);
-    next = {...previous, offered:current};
   }
-  if (!next) return;
-  const temporary = file + '.' + process.pid + '.tmp';
-  await fs.writeFile(temporary, JSON.stringify(next));
-  await fs.rename(temporary, file);
 }
