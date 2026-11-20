@@ -12,6 +12,7 @@ import {ensureWindowsLauncher,windowsLauncherPaths} from './windows-launcher.mjs
 import {syncWindowsShell} from './windows-shell.mjs';
 import {syncWindowsStartupTask} from './windows-startup.mjs';
 import {CollectorSupervisor} from './collector-health.mjs';
+import {observeWindowsUpdate} from './windows-update.mjs';
 import {resolveApp,mainPid,mainProcess,requestedDebugPort,listeners,processes,requestQuit,launch,stateRoot,port,fixedPort,setDebugPort,powershell} from './platform.mjs';
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 async function main(){
@@ -96,6 +97,12 @@ try{
    phase=null;
    if(action==='attach'){attach();lastError=null;}else supervisor.pause();
    await status(pid,action);
+   if(process.platform==='win32')await observeWindowsUpdate({stateRoot,app,action,processRecord,offer:async(targetPid,pkg)=>{
+    const child=spawn(windowsLauncherPaths(stateRoot).executable,['--recover-update',String(targetPid),pkg],{stdio:'ignore',windowsHide:true});
+    await new Promise((resolve,reject)=>{child.once('error',reject);child.once('spawn',resolve);});
+    child.unref();
+    await log(`Update recovery offered for ${pkg}, pid=${targetPid}.`);
+   }});
    if(action==='restart'&&!stopped){
     phase='graceful-quit';await status(pid,action);
     if(!await requestQuit(app,pid))throw new Error('Graceful quit refused; no forced termination attempted');

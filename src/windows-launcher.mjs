@@ -5,7 +5,31 @@ import {fileURLToPath} from 'node:url';
 import {psLiteral} from './windows-native.mjs';
 export const windowsLauncherPaths=stateRoot=>({executable:path.join(stateRoot,'launcher','CodexInfoBarLauncher.exe'),icon:path.join(stateRoot,'launcher','ChatGPT.ico')});
 
-export async function ensureWindowsLauncher({stateRoot,app,run}){
+export async function windowsServiceNode(stateRoot, nodePath=process.execPath){
+ const source=await fs.realpath(nodePath);
+ const pkg=source.match(/[/\\]WindowsApps[/\\]([^/\\]+)[/\\]/i);
+ if(!pkg)return nodePath;
+ // Store removes old package directories. Publish Node and its adjacent runtime
+ // libraries together, before any login entry or watcher points to them.
+ const parent=path.join(stateRoot,'node'),directory=path.join(parent,pkg[1]);
+ const executable=path.join(directory,'node.exe');
+ try{await fs.access(executable);return executable;}catch(error){if(error.code!=='ENOENT')throw error;}
+ await fs.mkdir(parent,{recursive:true});
+ const staging=await fs.mkdtemp(path.join(parent,'install-'));
+ try{
+  const bin=path.dirname(source);
+  for(const name of await fs.readdir(bin)){
+   if(/^(?:node\.exe|(?:concrt|vccorlib|vcruntime|msvcp)\d+[\w]*\.dll)$/i.test(name)){
+    await fs.copyFile(path.join(bin,name),path.join(staging,name));
+   }
+  }
+  await fs.access(path.join(staging,'node.exe'));
+  try{await fs.rename(staging,directory);}catch(error){await fs.access(executable).catch(()=>{throw error;});}
+ }finally{await fs.rm(staging,{recursive:true,force:true});}
+ return executable;
+}
+
+export async function ensureWindowsLauncher({stateRoot,app,run,nodePath=process.execPath}){
  const directory=path.join(stateRoot,'launcher');await fs.mkdir(directory,{recursive:true});
  const {executable,icon}=windowsLauncherPaths(stateRoot);
  const sources=['windows-launcher.cs','windows-native.cs','windows-shell.cs','windows-window-bootstrap.cs'].map(name=>fileURLToPath(new URL(name,import.meta.url)));
@@ -22,7 +46,7 @@ export async function ensureWindowsLauncher({stateRoot,app,run}){
  try{await fs.access(icon);}catch(error){if(error.code!=='ENOENT')throw error;
   await run(`Add-Type -AssemblyName System.Drawing;$icon=[Drawing.Icon]::ExtractAssociatedIcon(${psLiteral(app.executable)});if(!$icon){throw 'Official Codex icon unavailable'};$file=[IO.File]::Create(${psLiteral(icon)});try{$icon.Save($file)}finally{$file.Dispose();$icon.Dispose()}`);
  }
- const config=path.join(directory,'config.json'),content=JSON.stringify({nodePath:process.execPath});
+ const config=path.join(directory,'config.json'),content=JSON.stringify({nodePath});
  let prior;try{prior=await fs.readFile(config,'utf8');}catch(error){if(error.code!=='ENOENT')throw error;}
  if(prior!==content)await fs.writeFile(config,content);
  return {executable,icon};
