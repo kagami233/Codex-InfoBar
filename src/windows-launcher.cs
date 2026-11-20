@@ -82,6 +82,14 @@ namespace CodexInfoBar {
         public static string ActivationState(LauncherMain main,int port) {
             return main==null?"not-running":main.CommandLine==null?"identity-unavailable":RequestedPort(main.CommandLine)==port?"debug-requested":"needs-debug-restart";
         }
+        static bool ClaimUpdatePrompt(string state,string package) {
+            string directory=Path.Combine(state,"update-prompts");
+            Directory.CreateDirectory(directory);
+            string marker=Path.Combine(directory,package);
+            try { using(File.Open(marker,FileMode.CreateNew,FileAccess.Write)) {} }
+            catch(IOException) { if(File.Exists(marker))return false;throw; }
+            return true;
+        }
         public static LauncherMain InspectMain(string executable) {
             LauncherMain found=null;
             using(var query=new ManagementObjectSearcher("SELECT ProcessId,ExecutablePath,CommandLine FROM Win32_Process WHERE Name='ChatGPT.exe'"))
@@ -235,8 +243,10 @@ namespace CodexInfoBar {
             string state=Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,".."));
             bool probe=args.Length==1&&args[0]=="--probe";
             bool login=args.Length==1&&args[0]=="--login";
+            int updatePid=0;
+            bool update=args.Length==3&&args[0]=="--recover-update"&&Int32.TryParse(args[1],out updatePid)&&updatePid>0;
             try {
-                if(args.Length>0&&!probe&&!login) throw new ArgumentException("This launcher accepts only --probe, --login or no arguments");
+                if(args.Length>0&&!probe&&!login&&!update) throw new ArgumentException("Unrecognized InfoBar launcher arguments");
                 if(!probe)Marshal.ThrowExceptionForHR(SetCurrentProcessExplicitAppUserModelID("local.codex.infobar.launcher"));
                 string executable=ResolveInstalledCodex();int port=ReadPort(Path.Combine(state,"settings.json"));
                 LauncherMain existing=InspectMain(executable);string existingState=ActivationState(existing,port);
@@ -244,6 +254,17 @@ namespace CodexInfoBar {
                     var result=new LauncherProbe {Executable=executable,Port=port,Arguments=DebugArguments(port),ExistingPid=existing==null?0:existing.Pid,ExistingState=existingState,ExistingPackageFamily=existing==null?null:PackageFamily((uint)existing.Pid)};
                     using(var output=Console.OpenStandardOutput()) new DataContractJsonSerializer(typeof(LauncherProbe)).WriteObject(output,result);
                     return 0;
+                }
+                LauncherMain confirmedUpdate=null;
+                if(update){
+                    string package=Directory.GetParent(Path.GetDirectoryName(executable)).Name;
+                    if(existing==null||existing.Pid!=updatePid||existingState!="needs-debug-restart"||
+                       RequestedPort(existing.CommandLine)!=0||package!=args[2]||PackageFamily((uint)updatePid)!=Family)return 0;
+                    if(File.Exists(Path.Combine(state,"stop"))||!ClaimUpdatePrompt(state,package))return 0;
+                    Record(state,"update-recovery-prompt",executable,updatePid,port,0);
+                    var answer=MessageBox.Show("Windows 更新已启动新版 Codex。恢复底部状态栏需要正常重开一次。\n\n已保存工作，现在重开吗？选择“否”可继续使用，稍后完全退出并点击原任务栏图标即可。","Codex-InfoBar 更新恢复",MessageBoxButtons.YesNo,MessageBoxIcon.Information,MessageBoxDefaultButton.Button2);
+                    if(answer!=DialogResult.Yes){Record(state,"repair-deferred",executable,updatePid,port,0);return 2;}
+                    confirmedUpdate=existing;
                 }
                 string mutexName;using(var hash=System.Security.Cryptography.SHA256.Create())mutexName="Local\\CodexInfoBar.Activation."+BitConverter.ToString(hash.ComputeHash(Encoding.UTF8.GetBytes(CanonicalPath(state).ToLowerInvariant()))).Replace("-","");
                 using(var activation=new System.Threading.Mutex(false,mutexName)){
@@ -257,6 +278,7 @@ namespace CodexInfoBar {
                     if(!WaitForExistingWindowOrExit(executable,existing,15000))Record(state,"previous-instance-exited",executable,previous,port,0);
                     existing=InspectMain(executable);existingState=ActivationState(existing,port);
                 }
+                if(update&&(File.Exists(Path.Combine(state,"stop"))||existing==null||existing.Pid!=confirmedUpdate.Pid||existing.Created!=confirmedUpdate.Created||existing.CommandLine!=confirmedUpdate.CommandLine||existingState!="needs-debug-restart"||!EqualPath(executable,ResolveInstalledCodex())))return 0;
                 if(existingState=="identity-unavailable"){
                     Record(state,existingState,executable,existing.Pid,port,0);
                     if(login)return 2;
@@ -266,7 +288,7 @@ namespace CodexInfoBar {
                 if(existingState=="needs-debug-restart"){
                     Record(state,existingState,executable,existing.Pid,port,0);
                     if(login)return 2; // Login never closes an existing client or opens a modal.
-                    var answer=MessageBox.Show("当前 Codex 未开启 InfoBar 调试连接（PID "+existing.Pid+"）。这可能发生在客户端升级或其他入口先启动后，无法在运行中补加参数。\n\n是否已保存工作，允许现在正常退出并重新打开 Codex，以恢复 InfoBar？\n选择“否”会保留当前会话；客户端拒绝退出时不会强制结束。","Codex-InfoBar：保存后正常重开",MessageBoxButtons.YesNo,MessageBoxIcon.Information,MessageBoxDefaultButton.Button2);
+                    var answer=update?DialogResult.Yes:MessageBox.Show("当前 Codex 未开启 InfoBar 调试连接（PID "+existing.Pid+"）。这可能发生在客户端升级或其他入口先启动后，无法在运行中补加参数。\n\n是否已保存工作，允许现在正常退出并重新打开 Codex，以恢复 InfoBar？\n选择“否”会保留当前会话；客户端拒绝退出时不会强制结束。","Codex-InfoBar：保存后正常重开",MessageBoxButtons.YesNo,MessageBoxIcon.Information,MessageBoxDefaultButton.Button2);
                     if(!RepairExisting(executable,existing,answer==DialogResult.Yes)){Record(state,"repair-deferred",executable,existing.Pid,port,0);return 2;}
                     Record(state,"repair-normal-exit",executable,0,port,0);
                     executable=ResolveInstalledCodex();port=ReadPort(Path.Combine(state,"settings.json"));existing=null;

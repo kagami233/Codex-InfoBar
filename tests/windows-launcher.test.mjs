@@ -13,6 +13,8 @@ test('stable Windows launcher discovers versions at activation time and reads th
  t.after(async()=>{if(!path.resolve(directory).startsWith(path.resolve(os.tmpdir())+path.sep))throw new Error('Unsafe cleanup');await fs.rm(directory,{recursive:true,force:true,maxRetries:5,retryDelay:100});});
  const stateRoot=path.join(directory,'state'),options={stateRoot,app:{executable:process.execPath},run:powershell};
  const launcher=await ensureWindowsLauncher(options),before=await fs.readFile(launcher.executable);
+ const claim=`[Reflection.Assembly]::LoadFile(${psLiteral(launcher.executable)})|Out-Null;[CodexInfoBar.StableLauncher].GetMethod('ClaimUpdatePrompt',[Reflection.BindingFlags]'Static,NonPublic').Invoke($null,@(${psLiteral(stateRoot)},'OpenAI.Codex_2.0.0.0_x64__2p2nqsd0c76g0'))|ConvertTo-Json -Compress`;
+ assert.deepEqual((await Promise.all([powershell(claim),powershell(claim)])).sort(),['false','true']);
  await ensureWindowsLauncher(options);assert.deepEqual(await fs.readFile(launcher.executable),before,'unchanged source must not recompile the fixed target');
  await fs.writeFile(path.join(stateRoot,'settings.json'),JSON.stringify({CODEX_INFOBAR_PORT:'9431'}));
  for(const version of ['1','2']){const app=path.join(directory,version,'app');await fs.mkdir(app,{recursive:true});await fs.writeFile(path.join(app,'ChatGPT.exe'),'not launched');}

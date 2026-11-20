@@ -11,7 +11,7 @@ import {selectDebugPort} from './debug-port.mjs';
 import {verifyEndpointOwner} from './cdp.mjs';
 import {windowsSessionFlag,windowsEnvironment,runWindowsSession} from './windows-session.mjs';
 import {syncWindowsShortcuts,restoreWindowsShortcuts} from './windows-shortcuts.mjs';
-import {ensureWindowsLauncher} from './windows-launcher.mjs';
+import {ensureWindowsLauncher,windowsServiceNode} from './windows-launcher.mjs';
 import {syncWindowsShell} from './windows-shell.mjs';
 import {inspectWindowsStartupTask,windowsLoginMode,windowsStartupCommand,syncWindowsStartupTask,restoreWindowsStartupTask} from './windows-startup.mjs';
 if(process.platform==='win32'&&!process.argv.includes(windowsSessionFlag)){
@@ -40,6 +40,7 @@ async function stop(){
  }else throw new Error('macOS and Windows only');
 }
 if(!remove)await resolveApp();
+const serviceNode=!remove&&process.platform==='win32'?await windowsServiceNode(stateRoot):process.execPath;
 await stop();
 if(remove){if(process.platform==='win32'){let app;try{app=await resolveApp();}catch{}await syncWindowsShell({app,pid:app?await mainPid(app):null,stateRoot,run:powershell,restore:true});await restoreWindowsShortcuts({stateRoot,run:powershell});console.log('Official startup restore:',JSON.stringify(await restoreWindowsStartupTask({stateRoot,run:powershell})));}await fs.rm(process.platform==='win32'?startup:plist,{force:true});console.log('Startup service removed. Runtime/logs/cache retained at '+stateRoot);}
 else{
@@ -58,7 +59,7 @@ if(process.platform==='darwin'){
  await fs.writeFile(plist,`<?xml version="1.0"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>${label}</string><key>ProgramArguments</key><array><string>${xml(process.execPath)}</string><string>${xml(script)}</string></array><key>EnvironmentVariables</key><dict><key>CODEX_INFOBAR_STATE</key><string>${xml(stateRoot)}</string></dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>30</integer><key>StandardOutPath</key><string>${xml(path.join(stateRoot,'service.log'))}</string><key>StandardErrorPath</key><string>${xml(path.join(stateRoot,'service-error.log'))}</string></dict></plist>`,{mode:0o600});
  await run('/usr/bin/plutil',['-lint',plist]);await run('/bin/launchctl',['bootstrap',`gui/${process.getuid()}`,plist]);
 }else{
- const app=await resolveApp(),launcher=await ensureWindowsLauncher({app,stateRoot,run:powershell});
+ const app=await resolveApp(),launcher=await ensureWindowsLauncher({app,stateRoot,run:powershell,nodePath:serviceNode});
  const task=await inspectWindowsStartupTask({app,run:powershell});
  if(task&&(task.state===3||task.state===4))throw new Error('Official Codex login startup is policy-controlled; no policy was changed');
  const requested=process.argv.find(arg=>arg.startsWith('--windows-login='))?.slice('--windows-login='.length);
@@ -69,12 +70,12 @@ if(process.platform==='darwin'){
  console.log(`Taskbar launch target ready: ${links.launcher}`);
  await fs.mkdir(path.dirname(startup),{recursive:true});
  const quote=s=>'"'+s.replaceAll('"','""')+'"';
- const command=windowsStartupCommand({mode,launcher:launcher.executable,node:process.execPath,watcher:script});
+ const command=windowsStartupCommand({mode,launcher:launcher.executable,node:serviceNode,watcher:script});
  const vbs=`Set shell = CreateObject("WScript.Shell")\r\nshell.Environment("PROCESS")("CODEX_INFOBAR_STATE") = ${quote(stateRoot)}\r\nshell.Run ${quote(command)}, 0, False\r\n`;
  await fs.writeFile(startup,Buffer.concat([Buffer.from([0xff,0xfe]),Buffer.from(vbs,'utf16le')]));
  console.log('Windows login routing:',JSON.stringify(await syncWindowsStartupTask({app,stateRoot,run:powershell,mode})));
  const environment=windowsEnvironment({CODEX_INFOBAR_STATE:stateRoot});
- const pid=await startWindowsDetached(process.execPath,[script],{cwd:runtime,env:environment,run:powershell});
+ const pid=await startWindowsDetached(serviceNode,[script],{cwd:runtime,env:environment,run:powershell});
  const deadline=Date.now()+30000;let ready=false;
  while(Date.now()<deadline){
   const state=await inspectWatcher({stateRoot,allowedScripts,readProcesses:processes});
